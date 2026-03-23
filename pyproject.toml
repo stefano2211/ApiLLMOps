@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apillmops"
+version = "0.1.0"
+description = "Mothership API for LLM Fine-Tuning"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.1",
+    "pydantic>=2.7.4",
+    "pydantic-settings>=2.3.4",
+    "celery>=5.4.0",
+    "redis>=5.0.6",
+    "aiofiles>=24.1.0",
+    "requests>=2.32.3",
+    "loguru>=0.7.2",
+    "minio>=7.2.7",
+    "python-multipart>=0.0.9"
+]
