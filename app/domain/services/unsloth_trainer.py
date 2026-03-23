@@ -152,24 +152,31 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         
         logger.info(f"--> Auto-Generando GGUF nativo en: {export_dir}")
         
-        # Hilo de monitoreo para visibilidad de progreso (Heartbeat)
+        # Hilo de monitoreo para visibilidad de progreso (Heartbeat avanzada)
         def monitor_export_progress(directory, stop_event):
-            last_size = 0
+            cache_dir = "/app/data/huggingface_cache/hub"
             while not stop_event.is_set():
+                total_export_size = 0
                 if os.path.exists(directory):
-                    total_size = 0
                     for root, dirs, files in os.walk(directory):
                         for f in files:
-                            fp = os.path.join(root, f)
-                            total_size += os.path.getsize(fp)
-                    
-                    size_mb = total_size / (1024 * 1024)
-                    if total_size > last_size:
-                        logger.info(f"--> [Export Progress] Directorio: {directory} | Tamaño: {size_mb:.2f} MB (Escribiendo...)")
-                    else:
-                        logger.info(f"--> [Export Progress] Directorio: {directory} | Tamaño: {size_mb:.2f} MB (Esperando I/O...)")
-                    last_size = total_size
-                time.sleep(30) # Cada 30 segundos para mayor visibilidad
+                            total_export_size += os.path.getsize(os.path.join(root, f))
+                
+                total_cache_size = 0
+                if os.path.exists(cache_dir):
+                    for root, dirs, files in os.walk(cache_dir):
+                        for f in files:
+                            total_cache_size += os.path.getsize(os.path.join(root, f))
+                
+                export_mb = total_export_size / (1024 * 1024)
+                cache_gb = total_cache_size / (1024 * 1024 * 1024)
+                
+                if export_mb > 15: # Superado el umbral de config/tokenizer inicial
+                    logger.info(f"--> [Export Progress] Fusionando Pesos y Escribiendo GGUF: {export_mb:.2f} MB")
+                else:
+                    logger.info(f"--> [Export Progress] Paso 5 en Marcha: Descargando Pesos Base a Cache: {cache_gb:.2f} GB (Directorio export: {export_mb:.2f} MB)")
+                
+                time.sleep(30) # Cada 30 segundos
 
         stop_event = threading.Event()
         monitor_thread = threading.Thread(target=monitor_export_progress, args=(export_dir, stop_event))
@@ -220,6 +227,8 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
                 requests.post(webhook_url, json={"model_tag": f"{tenant_id}-v2"}, timeout=10)
             except Exception as e:
                 logger.error(f"Webhook failed: {e}")
+        
+        logger.info(f"✅ [MLOps] PIPELINE COMPLETADO EXITOSAMENTE para {tenant_id}. Modelo GGUF disponible en S3.")
                 
         return {
             "status": "success", 

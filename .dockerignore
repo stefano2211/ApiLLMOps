@@ -1,0 +1,35 @@
+# Ignore large data and cache directories
+data/
+data/huggingface_cache/
+app/data/huggingface_cache/
+.env
+
+# git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.venv
+.env
+.tox
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*,cover
+.hypothesis
+.pytest_cache/
+
+# Docker
+.dockerignore
+docker-compose.yml
+Dockerfile*
