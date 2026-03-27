@@ -14,11 +14,13 @@ def print_header(title):
 def get_edge_token():
     print_header("Fase 0: Obteniendo Access Token de IndustrialBackend")
     user_payload = {
+        "username": "mlops_tester",
         "email": "admin@mlops.test",
-        "password": "Password123!",
-        "full_name": "MLOps Tester"
+        "password": "Password123!"
     }
-    requests.post(f"{EDGE_URL}/auth/register", json=user_payload)
+    reg_resp = requests.post(f"{EDGE_URL}/auth/register", json=user_payload)
+    if reg_resp.status_code not in [200, 400]:  # 400 = ya existe, está bien
+        print(f"⚠️  Register: {reg_resp.status_code} - {reg_resp.text}")
     
     login_payload = {
         "email": "admin@mlops.test",
@@ -32,6 +34,7 @@ def get_edge_token():
     else:
         print(f"❌ Falló el login: {resp.status_code} - {resp.text}")
         return None
+
 
 def test_1_trigger_curator(token):
     print_header("Fase 1: Disparando Curador Edge (IndustrialBackend)")
@@ -56,7 +59,7 @@ def test_2_trigger_mothership_training():
         "tenant_id": "aura_tenant_01",
         "base_model": "unsloth/Qwen2.5-3B-bnb-4bit",
         "epochs": 1,
-        "webhook_url": f"{EDGE_URL}/mlops/webhook/model-ready"
+        "webhook_url": "http://host.docker.internal:8000/mlops/webhook/model-ready"
     }
     
     print(f"Llamando a {url} ...")
@@ -74,17 +77,46 @@ def test_2_trigger_mothership_training():
 def test_3_simulate_webhook():
     print_header("Fase 3: Simulando Webhook (Mothership -> Edge)")
     url = f"{EDGE_URL}/mlops/webhook/model-ready"
+    headers = {"x-api-key": MOTHERSHIP_API_KEY}
     payload = {"model_tag": "aura_tenant_01-v2"}
     
     print(f"Llamando Webhook OTA a {url} ...")
     try:
-        response = requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, headers=headers, json=payload, timeout=5)
         print(f"Status: {response.status_code}")
-        print("✅ Si el código es 200/202, revisa los logs de IndustrialBackend: Debería estar intentando hacer 'ollama pull aura_tenant_01-v2'.")
+        if response.status_code in [200, 202]:
+            print("✅ Webhook OTA aceptado. Revisa los logs de IndustrialBackend para ver el proceso 'ollama create'.")
+        else:
+            print(f"❌ Respuesta inesperada: {response.text}")
     except Exception as e:
         print(f"❌ Error: {e}")
-        return False
     return True
+
+def test_4_webhook_without_auth():
+    print_header("Fase 4: Verificación de Seguridad — Webhook sin API Key")
+    url = f"{EDGE_URL}/mlops/webhook/model-ready"
+    # Sin API key -> debe retornar 401 o 422 (campo requerido)
+    try:
+        resp = requests.post(url, json={"model_tag": "aura_tenant_01-v2"}, timeout=5)
+        if resp.status_code in [401, 422]:
+            print(f"\u2705 Webhook correctamente rechazado sin API key (HTTP {resp.status_code}).")
+        else:
+            print(f"\u274c FALLA DE SEGURIDAD: Se esperaba 401/422, se recibió {resp.status_code}")
+    except Exception as e:
+        print(f"\u274c Error: {e}")
+
+def test_5_webhook_injection():
+    print_header("Fase 5: Verificación de Seguridad — Sanitización de model_tag")
+    url = f"{EDGE_URL}/mlops/webhook/model-ready"
+    headers = {"x-api-key": MOTHERSHIP_API_KEY}
+    try:
+        resp = requests.post(url, headers=headers, json={"model_tag": "valid-model; rm -rf /"}, timeout=5)
+        if resp.status_code == 400:
+            print("\u2705 Inyección de shell correctamente bloqueada (HTTP 400).")
+        else:
+            print(f"\u274c POSIBLE VULNERABILIDAD: Se esperaba 400, se recibió {resp.status_code}")
+    except Exception as e:
+        print(f"\u274c Error: {e}")
 
 if __name__ == "__main__":
     print("\n--- INICIANDO TEST END-TO-END DE MLOPS ---")
@@ -97,5 +129,9 @@ if __name__ == "__main__":
     test_2_trigger_mothership_training()
     time.sleep(2)
     test_3_simulate_webhook()
+    time.sleep(1)
+    test_4_webhook_without_auth()
+    time.sleep(1)
+    test_5_webhook_injection()
     
     print("\n--- TEST FINALIZADO ---")

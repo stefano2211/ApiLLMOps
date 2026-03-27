@@ -16,6 +16,11 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
     Script de entrenamiento asincrónico (Celery Worker).
     Pipeline de 5 pasos basado en Unsloth + llama.cpp para entorno Edge.
     """
+    # Habilitar descarga acelerada desde HuggingFace Hub al inicio
+    # Aplica tanto al from_pretrained (Paso 1) como al export GGUF (Paso 5)
+    import os
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+
     logger.info(f"[MLOps] Starting Production Pipeline for {tenant_id} on {base_model}")
     
     # Intenta cargar librerías GPU, si fallan atrapa la excepción para no crashear celery
@@ -203,9 +208,6 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         monitor_thread.start()
 
         try:
-            # Forzar visibilidad de descargas de HF si es necesario
-            os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-            
             model.save_pretrained_gguf(
                 export_dir, 
                 tokenizer, 

@@ -35,7 +35,6 @@ services:
       /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
       /usr/bin/mc mb myminio/datalake || true;
       /usr/bin/mc mb myminio/models || true;
-      /usr/bin/mc anonymous set download myminio/models;
       exit 0;
       "
 
@@ -51,10 +50,11 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATA_LAKE_PATH=/app/data/lake
       - MODELS_OUTPUT_PATH=/app/data/models
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_EXTERNAL_ENDPOINT=localhost:9002
+      - MINIO_ENDPOINT=host.docker.internal:9002
+      - MINIO_EXTERNAL_ENDPOINT=host.docker.internal:9002
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
+      - MOTHERSHIP_API_KEY=${MOTHERSHIP_API_KEY:-default-mothership-secret-key}
     volumes:
       - ./app:/app/app
       - ./data:/app/data

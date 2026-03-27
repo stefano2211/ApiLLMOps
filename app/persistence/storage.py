@@ -48,15 +48,9 @@ class MinioManager:
     def get_presigned_url(self, bucket: str, object_name: str, expires=datetime.timedelta(hours=2)) -> str:
         """Returns a temporary download link for the edge device."""
         try:
-            # Genera URL con el host interno usado por el Container (ej. minio:9000)
-            url = self.client.presigned_get_object(bucket, object_name, expires=expires)
-            
-            # Auto-sustituye minio:9000 por localhost:9000 (o el dominio externo) 
-            # para que el Edge Node físico pueda resolverlo desde afuera de Docker
-            if settings.MINIO_ENDPOINT and settings.MINIO_EXTERNAL_ENDPOINT:
-                url = url.replace(settings.MINIO_ENDPOINT, settings.MINIO_EXTERNAL_ENDPOINT)
-                
-            return url
+            # Genera la URL. Si MINIO_ENDPOINT y MINIO_EXTERNAL_ENDPOINT son el mismo
+            # (ej. host.docker.internal:9002), la firma será válida para el Edge Node.
+            return self.client.presigned_get_object(bucket, object_name, expires=expires)
         except S3Error as e:
             logger.error(f"Error generating presigned URL: {e}")
             return ""
