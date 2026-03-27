@@ -4,10 +4,9 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
 from loguru import logger
 from app.core.config import settings
 from app.core.security import verify_api_key
+from app.persistence.storage import storage
 
 router = APIRouter()
-
-from app.persistence.storage import storage
 
 @router.post("/upload")
 async def upload_dataset(
@@ -23,28 +22,32 @@ async def upload_dataset(
         raise HTTPException(status_code=400, detail="Only .jsonl files are supported")
         
     os.makedirs("/tmp/datalake", exist_ok=True)
-    local_master_file = f"/tmp/datalake/{tenant_id}_master.jsonl"
-    object_name = f"{tenant_id}_master.jsonl"
+    # Nombre de objeto dinámico: el nombre que viene del Edge (ej: aura_tenant_01_Sensor_Caldera.jsonl)
+    object_name = file.filename
+    local_master_file = f"/tmp/datalake/{object_name}"
     bucket = settings.S3_BUCKET_DATALAKE
     
     try:
-        # 1. Descargar histórico base desde S3 (evita sobreescrituras en blanco)
-        storage.download_file(bucket, object_name, local_master_file)
+        # 1. Descargar histórico específico del archivo si existe (Incremental Append)
+        # Si no existe, storage no lanzará error o se manejará el flujo
+        try:
+            storage.download_file(bucket, object_name, local_master_file)
+        except Exception:
+            logger.info(f"New dataset file entry: {object_name}. Creating fresh.")
         
-        # 2. Append en disco local temporal en chunks (Evita OOM en archivos masivos)
-        last_char = b''
+        # 2. Append en disco local temporal
         async with aiofiles.open(local_master_file, 'ab') as out_file:
+            # Asegurar nueva línea al inicio si el archivo no está vacío
+            if os.path.exists(local_master_file) and os.path.getsize(local_master_file) > 0:
+                 await out_file.write(b'\n')
+                 
             while True:
-                chunk = await file.read(1024 * 1024)  # Chunks de 1MB
+                chunk = await file.read(1024 * 1024)
                 if not chunk:
                     break
                 await out_file.write(chunk)
-                last_char = chunk[-1:]
-            
-            if last_char and last_char != b'\n':
-                await out_file.write(b'\n')
                 
-        # 3. Empujar de vuelta al Data Lake (S3)
+        # 3. Re-subir al Bucket con el nombre específico de la herramienta
         storage.upload_file(bucket, object_name, local_master_file)
         
         # Limpiar

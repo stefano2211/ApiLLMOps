@@ -59,9 +59,28 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
     
     try:
         # --- PASO 1: Chequeo de Data y Carga del Modelo Base ---
-        logger.info(f"--> [Paso 1] Descargando dataset S3: {bucket_datalake}/{object_name}")
-        if not storage.download_file(bucket_datalake, object_name, local_dataset_path):
-            raise FileNotFoundError(f"Dataset de entrenamiento no encontrado en S3: {object_name}")
+        logger.info(f"--> [Paso 1] Agregando todos los datasets de {tenant_id}...")
+        
+        objects = storage.list_objects(bucket_datalake, prefix=f"{tenant_id}_")
+        found_data = False
+        
+        # Limpiar local si existe de corridas previas
+        if os.path.exists(local_dataset_path):
+            os.remove(local_dataset_path)
+
+        with open(local_dataset_path, "ab") as master_file:
+            for obj in objects:
+                temp_tool_file = f"/tmp/{obj.object_name}"
+                if storage.download_file(bucket_datalake, obj.object_name, temp_tool_file):
+                    with open(temp_tool_file, "rb") as f:
+                        master_file.write(f.read())
+                        master_file.write(b"\n") # Asegurar salto entre herramientas
+                    os.remove(temp_tool_file)
+                    found_data = True
+                    logger.info(f"    - Incluido: {obj.object_name}")
+
+        if not found_data:
+            raise FileNotFoundError(f"No se encontraron datasets para {tenant_id} en S3.")
             
         logger.info(f"--> [Paso 1.1] Cargando modelo base {base_model} en 4-bits...")
         model, tokenizer = FastLanguageModel.from_pretrained(

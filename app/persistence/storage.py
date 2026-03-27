@@ -61,4 +61,12 @@ class MinioManager:
             logger.error(f"Error generating presigned URL: {e}")
             return ""
 
+    def list_objects(self, bucket: str, prefix: str):
+        """Lists objects in a bucket with a given prefix."""
+        try:
+            return self.client.list_objects(bucket, prefix=prefix, recursive=True)
+        except S3Error as e:
+            logger.error(f"Error listing objects in MinIO: {e}")
+            return []
+
 storage = MinioManager()
