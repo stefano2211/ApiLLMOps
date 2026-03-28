@@ -90,7 +90,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         logger.info(f"--> [Paso 1.1] Cargando modelo base {base_model} en 4-bits...")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=base_model,
-            max_seq_length=1024, # Reducido de 2048 para ahorrar VRAM en GPU de 8GB
+            max_seq_length=1024, # Safe bound para secuencias de 500-600 tokens
             dtype=None, # Auto-detecta fp16 o bf16
             load_in_4bit=True,
         )
@@ -131,12 +131,12 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             tokenizer=tokenizer,
             train_dataset=dataset,
             dataset_text_field="text",
-            max_seq_length=1024, # Reducido de 2048
+            max_seq_length=1024, # Safe bound para evitar el crash de Dynamo con secuencias > 512
             dataset_num_proc=2,
             packing=False,
             args=TrainingArguments(
-                per_device_train_batch_size=1, # Reducido de 2, crítico para 8GB VRAM
-                gradient_accumulation_steps=4,
+                per_device_train_batch_size=1, 
+                gradient_accumulation_steps=8, # Aumentado de 4 a 8
                 warmup_ratio=0.1,
                 num_train_epochs=epochs,
                 learning_rate=2e-4,
@@ -208,6 +208,10 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         monitor_thread.start()
 
         try:
+            # Force llama.cpp compilation to use only 1 or 2 threads
+            # This prevents WSL/Docker Desktop from OOM-crashing due to 16+ parallel g++ jobs
+            os.environ["MAKEFLAGS"] = "-j2"
+            
             model.save_pretrained_gguf(
                 export_dir, 
                 tokenizer, 
