@@ -245,7 +245,15 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         if webhook_url:
             logger.info(f"--> Lanzando OTA Webhook hacia Edge: {webhook_url}")
             try:
-                requests.post(webhook_url, json={"model_tag": f"{tenant_id}-v2"}, timeout=10)
+                # x-api-key header is REQUIRED by IndustrialBackend /mlops/webhook/model-ready
+                # Without it, the Edge responds 422 and the OTA update never triggers.
+                webhook_headers = {"x-api-key": settings.API_KEY}
+                requests.post(
+                    webhook_url,
+                    json={"model_tag": f"{tenant_id}-v2"},
+                    headers=webhook_headers,
+                    timeout=10,
+                )
             except Exception as e:
                 logger.error(f"Webhook failed: {e}")
         
