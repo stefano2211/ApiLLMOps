@@ -184,13 +184,19 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
                 if os.path.exists(directory):
                     for root, dirs, files in os.walk(directory):
                         for f in files:
-                            total_export_size += os.path.getsize(os.path.join(root, f))
+                            try:
+                                total_export_size += os.path.getsize(os.path.join(root, f))
+                            except OSError:
+                                pass
                 
                 total_cache_size = 0
                 if os.path.exists(cache_dir):
                     for root, dirs, files in os.walk(cache_dir):
                         for f in files:
-                            total_cache_size += os.path.getsize(os.path.join(root, f))
+                            try:
+                                total_cache_size += os.path.getsize(os.path.join(root, f))
+                            except OSError:
+                                pass
                 
                 export_mb = total_export_size / (1024 * 1024)
                 cache_gb = total_cache_size / (1024 * 1024 * 1024)
@@ -208,14 +214,15 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         monitor_thread.start()
 
         try:
-            # Force llama.cpp compilation to use only 1 or 2 threads
-            # This prevents WSL/Docker Desktop from OOM-crashing due to 16+ parallel g++ jobs
-            os.environ["MAKEFLAGS"] = "-j2"
+            # Force llama.cpp compilation to use only 1 thread to strictly prevent WSL/Docker OOM crashes
+            os.environ["MAKEFLAGS"] = "-j1"
+            os.environ["MAX_JOBS"] = "1"
             
             model.save_pretrained_gguf(
                 export_dir, 
                 tokenizer, 
-                quantization_method="q4_k_m" 
+                quantization_method="q4_k_m",
+                maximum_memory_usage=0.5
             )
         finally:
             stop_event.set()
@@ -228,9 +235,11 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         output_gguf_s3 = None
         
         logger.info("--> Subiendo artefactos nativos a S3...")
-        # Unsloth genera habitualmente "unsloth.gguf" o "model.gguf" y un "Modelfile" en export_dir
-        for file in os.listdir(export_dir):
-            file_path = os.path.join(export_dir, file)
+        # Unsloth adds a "_gguf" suffix to the export directory magically.
+        actual_output_dir = f"{export_dir}_gguf"
+        
+        for file in os.listdir(actual_output_dir):
+            file_path = os.path.join(actual_output_dir, file)
             if file.endswith(".gguf"):
                 gguf_s3_name = f"{tenant_id}-v2.gguf"
                 storage.upload_file(bucket_models, gguf_s3_name, file_path)
@@ -242,6 +251,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         # Limpieza TMP
         try:
             os.remove(local_dataset_path)
+            # clean up both directories if possible
         except OSError:
             pass
 
