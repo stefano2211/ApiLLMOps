@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
     MINIO_SECRET_KEY: str = os.getenv("MINIO_SECRET_KEY", "minioadmin")
     S3_BUCKET_DATALAKE: str = os.getenv("S3_BUCKET_DATALAKE", "datalake")
+    S3_BUCKET_DATALAKE_VL: str = os.getenv("S3_BUCKET_DATALAKE_VL", "datalake-vl")  # VL (screenshots + acciones)
     S3_BUCKET_MODELS: str = os.getenv("S3_BUCKET_MODELS", "models")
 
     class Config:
