@@ -51,4 +51,4 @@ RUN uv pip install --system --no-cache .
 
 COPY . .
 
-CMD ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-P", "solo"]
+CMD ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-P", "solo", "--max-tasks-per-child=1"]

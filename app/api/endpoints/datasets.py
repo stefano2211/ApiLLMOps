@@ -22,40 +22,36 @@ async def upload_dataset(
         raise HTTPException(status_code=400, detail="Only .jsonl files are supported")
         
     os.makedirs("/tmp/datalake", exist_ok=True)
+    import uuid
     # Nombre de objeto dinámico: el nombre que viene del Edge (ej: aura_tenant_01_Sensor_Caldera.jsonl)
-    object_name = file.filename
-    local_master_file = f"/tmp/datalake/{object_name}"
+    base_name = file.filename
+    safe_uuid = str(uuid.uuid4())[:8]
+    if base_name.endswith(".jsonl"):
+        object_name = base_name.replace(".jsonl", f"_{safe_uuid}.jsonl")
+    else:
+        object_name = f"{base_name}_{safe_uuid}.jsonl"
+
+    local_chunk_file = f"/tmp/datalake/{object_name}"
     bucket = settings.S3_BUCKET_DATALAKE
     
     try:
-        # 1. Descargar histórico específico del archivo si existe (Incremental Append)
-        # Si no existe, storage no lanzará error o se manejará el flujo
-        try:
-            storage.download_file(bucket, object_name, local_master_file)
-        except Exception:
-            logger.info(f"New dataset file entry: {object_name}. Creating fresh.")
-        
-        # 2. Append en disco local temporal
-        async with aiofiles.open(local_master_file, 'ab') as out_file:
-            # Asegurar nueva línea al inicio si el archivo no está vacío
-            if os.path.exists(local_master_file) and os.path.getsize(local_master_file) > 0:
-                 await out_file.write(b'\n')
-                 
+        # Descarga el stream entrante en el chunk nuevo local
+        async with aiofiles.open(local_chunk_file, 'wb') as out_file:
             while True:
                 chunk = await file.read(1024 * 1024)
                 if not chunk:
                     break
                 await out_file.write(chunk)
                 
-        # 3. Re-subir al Bucket con el nombre específico de la herramienta
-        storage.upload_file(bucket, object_name, local_master_file)
+        # Re-subir al Bucket como partición única independiente
+        storage.upload_file(bucket, object_name, local_chunk_file)
         
         # Limpiar
-        if os.path.exists(local_master_file):
-            os.remove(local_master_file)
+        if os.path.exists(local_chunk_file):
+            os.remove(local_chunk_file)
 
-        logger.info(f"Dataset securely appended to S3: {bucket}/{object_name}")
-        return {"status": "success", "message": f"Data appended to S3 bucket: {bucket}/{object_name}"}
+        logger.info(f"Dataset securely partitioned to S3: {bucket}/{object_name}")
+        return {"status": "success", "message": f"Data chunk uploaded to S3 bucket: {bucket}/{object_name}"}
         
     except Exception as e:
         logger.error(f"Error appending dataset to MinIO: {e}")
