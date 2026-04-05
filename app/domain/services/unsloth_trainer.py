@@ -163,95 +163,44 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         logger.info("--> Iniciando Pila Tensorial (Trainer)...")
         trainer_stats = trainer.train()
 
-        # --- PASO 5: Fusión y Exportación (CRÍTICO PARA OLLAMA) ---
-        logger.info("--> [Paso 5] Fusión LoRA y conversión nativa GGUF/Modelfile...")
-        export_dir = f"/tmp/models/{tenant_id}-v2"
+        # --- PASO 5: Exportación LoRA y Compresión (CRÍTICO PARA vLLM) ---
+        logger.info("--> [Paso 5] Guardando LoRA en safetensors...")
+        export_dir = f"/tmp/models/{tenant_id}-v2-lora"
         
-        # Limpiar residuos fantasmas (stale) de runs de entrenamiento previos
+        # Limpiar residuos fantasmas
         import shutil
+        import tarfile
         if os.path.exists(export_dir):
             shutil.rmtree(export_dir, ignore_errors=True)
             
         os.makedirs(export_dir, exist_ok=True)
         
-        logger.info(f"--> Auto-Generando GGUF nativo en: {export_dir}")
+        logger.info(f"--> Generando Safetensors (LoRA): {export_dir}")
         
-        # Hilo de monitoreo para visibilidad de progreso (Heartbeat avanzada)
-        def monitor_export_progress(directory, stop_event):
-            cache_dir = "/app/data/huggingface_cache/hub"
-            while not stop_event.is_set():
-                total_export_size = 0
-                if os.path.exists(directory):
-                    for root, dirs, files in os.walk(directory):
-                        for f in files:
-                            try:
-                                total_export_size += os.path.getsize(os.path.join(root, f))
-                            except OSError:
-                                pass
-                
-                total_cache_size = 0
-                if os.path.exists(cache_dir):
-                    for root, dirs, files in os.walk(cache_dir):
-                        for f in files:
-                            try:
-                                total_cache_size += os.path.getsize(os.path.join(root, f))
-                            except OSError:
-                                pass
-                
-                export_mb = total_export_size / (1024 * 1024)
-                cache_gb = total_cache_size / (1024 * 1024 * 1024)
-                
-                if export_mb > 15: # Superado el umbral de config/tokenizer inicial
-                    logger.info(f"--> [Export Progress] Fusionando Pesos y Escribiendo GGUF: {export_mb:.2f} MB")
-                else:
-                    logger.info(f"--> [Export Progress] Paso 5 en Marcha: Descargando Pesos Base a Cache: {cache_gb:.2f} GB (Directorio export: {export_mb:.2f} MB)")
-                
-                time.sleep(30) # Cada 30 segundos
-
-        stop_event = threading.Event()
-        monitor_thread = threading.Thread(target=monitor_export_progress, args=(export_dir, stop_event))
-        monitor_thread.daemon = True # Asegura que no bloquee el cierre del worker
-        monitor_thread.start()
-
-        try:
-            # Force llama.cpp compilation to use only 1 thread to strictly prevent WSL/Docker OOM crashes
-            os.environ["MAKEFLAGS"] = "-j1"
-            os.environ["MAX_JOBS"] = "1"
-            
-            model.save_pretrained_gguf(
-                export_dir, 
-                tokenizer, 
-                quantization_method="q4_k_m",
-                maximum_memory_usage=0.5
-            )
-        finally:
-            stop_event.set()
-            # No bloqueamos esperando el join para no retrasar la subida a S3
-            logger.info("--> Exportación finalizada. Cerrando monitoreo.")
-
+        # Guardado instántaneo de adaptadores LoRA (~100MB)
+        model.save_pretrained(export_dir)
+        tokenizer.save_pretrained(export_dir)
         
-        # Buscar el archivo .gguf generado y el Modelfile en el directorio
+        # Comprimir en tar.gz para subida a S3 y fácil descarga OTA
+        tar_path = f"{export_dir}.tar.gz"
+        logger.info(f"--> Comprimiendo {export_dir} en {tar_path}...")
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(export_dir, arcname=f"{tenant_id}-v2")
+        
+        # Subir artefacto zipeado a S3
         bucket_models = settings.S3_BUCKET_MODELS
-        output_gguf_s3 = None
+        output_tar_s3 = None
         
-        logger.info("--> Subiendo artefactos nativos a S3...")
-        # Unsloth adds a "_gguf" suffix to the export directory magically.
-        actual_output_dir = f"{export_dir}_gguf"
-        
-        for file in os.listdir(actual_output_dir):
-            file_path = os.path.join(actual_output_dir, file)
-            if file.endswith(".gguf"):
-                gguf_s3_name = f"{tenant_id}-v2.gguf"
-                storage.upload_file(bucket_models, gguf_s3_name, file_path)
-                output_gguf_s3 = f"{bucket_models}/{gguf_s3_name}"
-            elif "Modelfile" in file:
-                modelfile_s3_name = f"{tenant_id}-v2.Modelfile"
-                storage.upload_file(bucket_models, modelfile_s3_name, file_path)
+        logger.info("--> Subiendo Tarball a S3 / Minio...")
+        tar_s3_name = f"{tenant_id}-v2-lora.tar.gz"
+        storage.upload_file(bucket_models, tar_s3_name, tar_path)
+        output_tar_s3 = f"{bucket_models}/{tar_s3_name}"
 
         # Limpieza TMP
         try:
             os.remove(local_dataset_path)
-            # clean up both directories if possible
+            os.remove(tar_path)
+            shutil.rmtree(export_dir, ignore_errors=True)
         except OSError:
             pass
 
@@ -271,12 +220,12 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             except Exception as e:
                 logger.error(f"Webhook failed: {e}")
         
-        logger.info(f"✅ [MLOps] PIPELINE COMPLETADO EXITOSAMENTE para {tenant_id}. Modelo GGUF disponible en S3.")
+        logger.info(f"✅ [MLOps] PIPELINE COMPLETADO EXITOSAMENTE para {tenant_id}. Adaptador LoRA .tar.gz disponible en S3.")
                 
         return {
             "status": "success", 
             "tenant_id": tenant_id, 
-            "output_s3": output_gguf_s3
+            "output_s3": output_tar_s3
         }
 
     except Exception as e:

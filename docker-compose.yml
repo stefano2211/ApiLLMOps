@@ -58,6 +58,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./data:/app/data
+      - hf_cache:/app/data/huggingface_cache
     depends_on:
       - redis
     restart: unless-stopped
@@ -80,6 +81,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./data:/app/data
+      - hf_cache:/app/data/huggingface_cache
     depends_on:
       - redis
     deploy:
@@ -94,3 +96,4 @@ services:
 volumes:
   redis_data:
   minio_data:
+  hf_cache:

@@ -152,74 +152,38 @@ def start_vl_finetuning_task(
         trainer = None
         logger.info("✅ [Paso 3] Entrenamiento VL completado.")
 
-        # ── PASO 4: Export GGUF + mmproj → MinIO → Webhook ──────────────────
-        logger.info("--> [Paso 4] Exportando a GGUF + mmproj...")
+        # ── PASO 4: Export Safetensors LoRA → MinIO → Webhook ──────────────────
+        logger.info("--> [Paso 4] Exportando LoRA multimodal en Safetensors...")
 
-        export_dir = f"/tmp/models/{tenant_id}-vl"
+        export_dir = f"/tmp/models/{tenant_id}-vl-lora"
         import shutil
+        import tarfile
         if os.path.exists(export_dir):
             shutil.rmtree(export_dir, ignore_errors=True)
         os.makedirs(export_dir, exist_ok=True)
 
-        # Hilo heartbeat para monitorear el export (puede tardar 30-60 min)
-        stop_event = threading.Event()
-        monitor_thread = threading.Thread(
-            target=_monitor_export, args=(export_dir, stop_event), daemon=True
-        )
-        monitor_thread.start()
+        model.save_pretrained(export_dir)
+        tokenizer.save_pretrained(export_dir)
 
-        try:
-            os.environ["MAKEFLAGS"] = "-j1"
-            os.environ["MAX_JOBS"] = "1"
-            model.save_pretrained_gguf(
-                export_dir,
-                tokenizer,
-                quantization_method="q4_k_m",
-                maximum_memory_usage=0.5,
-            )
-        finally:
-            stop_event.set()
-            logger.info("--> Export finalizado.")
+        # Comprimir en tar.gz para subida a S3 y fácil descarga OTA
+        tar_path = f"{export_dir}.tar.gz"
+        logger.info(f"--> Comprimiendo {export_dir} en {tar_path}...")
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(export_dir, arcname=f"{tenant_id}-vl")
 
-        # Unsloth agrega "_gguf" al nombre del directorio de salida real
-        actual_output_dir = f"{export_dir}_gguf"
+        output_tar_s3 = None
 
-        output_gguf_s3 = None
-        output_mmproj_s3 = None
-
-        logger.info(f"--> Subiendo artefactos VL a MinIO bucket '{bucket_models}'...")
-        for filename in os.listdir(actual_output_dir):
-            filepath = os.path.join(actual_output_dir, filename)
-
-            if filename.endswith(".gguf") and "mmproj" not in filename.lower():
-                # Modelo principal con LoRA fusionado
-                gguf_s3_name = f"{tenant_id}-vl.gguf"
-                storage.upload_file(bucket_models, gguf_s3_name, filepath)
-                output_gguf_s3 = f"{bucket_models}/{gguf_s3_name}"
-                logger.info(f"    ✅ Modelo principal subido: {gguf_s3_name}")
-
-            elif "mmproj" in filename.lower() and filename.endswith(".gguf"):
-                # Vision projector (encoder visual)
-                mmproj_s3_name = f"{tenant_id}-vl-mmproj.gguf"
-                storage.upload_file(bucket_models, mmproj_s3_name, filepath)
-                output_mmproj_s3 = f"{bucket_models}/{mmproj_s3_name}"
-                logger.info(f"    ✅ Vision projector subido: {mmproj_s3_name}")
-
-            elif "Modelfile" in filename:
-                modelfile_s3_name = f"{tenant_id}-vl.Modelfile"
-                storage.upload_file(bucket_models, modelfile_s3_name, filepath)
-
-        if not output_gguf_s3:
-            raise FileNotFoundError(f"No se encontró el GGUF principal en {actual_output_dir}")
-        if not output_mmproj_s3:
-            logger.warning(
-                "⚠️  mmproj.gguf no encontrado — el computer use agent no tendrá capacidad visual."
-            )
+        logger.info(f"--> Subiendo Tarball VL a MinIO bucket '{bucket_models}'...")
+        tar_s3_name = f"{tenant_id}-vl-lora.tar.gz"
+        storage.upload_file(bucket_models, tar_s3_name, tar_path)
+        output_tar_s3 = f"{bucket_models}/{tar_s3_name}"
 
         # Limpiar archivo local temporal
         try:
             if os.path.exists(local_vl_path):
                 os.remove(local_vl_path)
+            os.remove(tar_path)
+            shutil.rmtree(export_dir, ignore_errors=True)
         except OSError:
             pass
 
@@ -230,7 +194,6 @@ def start_vl_finetuning_task(
                 payload = {
                     "model_tag": f"{tenant_id}-vl",
                     "model_type": "vision",
-                    "mmproj_tag": f"{tenant_id}-vl-mmproj" if output_mmproj_s3 else None,
                 }
                 requests.post(
                     webhook_url,
@@ -245,8 +208,7 @@ def start_vl_finetuning_task(
         return {
             "status": "success",
             "tenant_id": tenant_id,
-            "model_gguf_s3": output_gguf_s3,
-            "mmproj_gguf_s3": output_mmproj_s3,
+            "output_s3": output_tar_s3,
         }
 
     except Exception as e:
@@ -384,17 +346,4 @@ def _load_vl_dataset(jsonl_path: str) -> "HFDataset":
     return HFDataset.from_list(processed)
 
 
-def _monitor_export(directory: str, stop_event: threading.Event):
-    """Hilo heartbeat para monitorear el progreso del export GGUF (cada 30s)."""
-    while not stop_event.is_set():
-        total_bytes = 0
-        if os.path.exists(directory):
-            for root, _, files in os.walk(directory):
-                for fname in files:
-                    try:
-                        total_bytes += os.path.getsize(os.path.join(root, fname))
-                    except OSError:
-                        pass
-        total_mb = total_bytes / (1024 * 1024)
-        logger.info(f"--> [VL Export] Convergiendo GGUF: {total_mb:.1f} MB escritos...")
-        time.sleep(30)
+

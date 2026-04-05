@@ -18,17 +18,14 @@ async def get_latest_model(
     Requiere API key para prevenir descarga no autorizada de modelos.
     """
     bucket = settings.S3_BUCKET_MODELS
-    gguf_name = f"{tenant_id}-v2.gguf"
-    modelfile_name = f"{tenant_id}-v2.Modelfile"
+    tar_name = f"{tenant_id}-v2-lora.tar.gz"
 
-    gguf_url = storage.get_presigned_url(bucket, gguf_name)
-    modelfile_url = storage.get_presigned_url(bucket, modelfile_name)
+    tar_url = storage.get_presigned_url(bucket, tar_name)
 
     return {
         "tenant_id": tenant_id,
         "latest_tag": f"{tenant_id}-v2",
-        "gguf_url": gguf_url,
-        "modelfile_url": modelfile_url,
-        "format": "GGUF",
-        "quantization": "Q4_K_M"
+        "lora_url": tar_url,
+        "format": "Safetensors-LoRA",
+        "quantization": "BF16"
     }
