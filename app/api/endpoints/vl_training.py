@@ -37,14 +37,14 @@ async def trigger_vl_training(
     api_key: str = Depends(verify_api_key),
 ):
     """
-    Encola el pipeline VL unificado en el Celery Worker.
+    Encola el pipeline VL en el Celery Worker GPU.
 
-    El pipeline ejecuta DOS FASES:
-      - FASE 1: Fine-tune con datos de computer use (screenshots + acciones).
-      - FASE 2: Fine-tune con datos históricos de texto (imagen dummy 4x4).
-
-    Al finalizar dispara el webhook OTA al Edge con payload:
-      {"model_tag": "...-vl", "model_type": "vision", "mmproj_tag": "...-vl-mmproj"}
+    El pipeline ejecuta entrenamiento de computer use con datos de screenshots + acciones
+    (formato: messages con PIL images + respuestas JSON de acción).
+    
+    Al finalizar, dispara el webhook OTA al Edge con payload:
+      {"model_tag": "...-vl", "model_type": "vision"}
+    El Edge descarga el tar.gz del adaptador LoRA safetensors y lo inyecta en vLLM.
     """
     logger.info(f"[VL Training] Job recibido para tenant: {req.tenant_id}")
     try:
@@ -86,31 +86,23 @@ async def get_vl_model_config(
     api_key: str = Depends(verify_api_key),
 ):
     """
-    Devuelve las presigned URLs de los artefactos VL del tenant:
-      - model.gguf  → modelo principal con pesos de lenguaje + LoRA fusionado
-      - mmproj.gguf → vision projector (encoder visual)
-      - Modelfile   → configuración Ollama (FROM + ADAPTER)
+    Devuelve la presigned URL del adaptador LoRA VL del tenant:
+      - lora_url → tar.gz con safetensors (lo que realmente genera el trainer)
 
-    El Edge usa estas URLs para el proceso OTA.
+    El Edge usa esta URL para el proceso OTA: descarga el tar.gz,
+    extrae los pesos a /loras/ y llama a POST /v1/load_lora_adapter en vLLM.
     """
+    # BUG 6 fix: el trainer guarda {tenant_id}-vl-lora.tar.gz, NO archivos .gguf
     bucket = settings.S3_BUCKET_MODELS
-    gguf_name = f"{tenant_id}-vl.gguf"
-    mmproj_name = f"{tenant_id}-vl-mmproj.gguf"
-    modelfile_name = f"{tenant_id}-vl.Modelfile"
+    tar_name = f"{tenant_id}-vl-lora.tar.gz"   # Nombre real generado por vl_trainer.py
 
-    gguf_url = storage.get_presigned_url(bucket, gguf_name)
-    mmproj_url = storage.get_presigned_url(bucket, mmproj_name)
-    modelfile_url = storage.get_presigned_url(bucket, modelfile_name)
+    lora_url = storage.get_presigned_url(bucket, tar_name)
 
     return {
         "tenant_id": tenant_id,
         "model_type": "vision",
         "latest_tag": f"{tenant_id}-vl",
-        "mmproj_tag": f"{tenant_id}-vl-mmproj",
-        "gguf_url": gguf_url,
-        "mmproj_url": mmproj_url,
-        "modelfile_url": modelfile_url,
-        "format": "GGUF",
-        "quantization": "Q4_K_M",
+        "lora_url": lora_url,          # URL del tar.gz con safetensors LoRA (para vLLM)
+        "format": "safetensors",        # Los pesos son safetensors, NO GGUF
         "base_architecture": "Qwen2.5-VL",
     }

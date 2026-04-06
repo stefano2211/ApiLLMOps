@@ -96,6 +96,7 @@ def start_vl_finetuning_task(
             model_name=base_model,
             load_in_4bit=True,
             use_gradient_checkpointing="unsloth",
+            max_seq_length=2048,   # WARN 4 fix: debe coincidir con SFTConfig.max_seq_length
         )
 
         model = FastVisionModel.get_peft_model(
@@ -105,9 +106,10 @@ def start_vl_finetuning_task(
                 "q_proj", "k_proj", "v_proj", "o_proj",
                 "gate_proj", "up_proj", "down_proj",
             ],
-            lora_alpha=16,
+            lora_alpha=32,          # BUG 2 fix: ratio α/r = 2:1 (estándar, igual que texto trainer)
             lora_dropout=0,
             bias="none",
+            random_state=3407,      # BUG 1 fix: reproducibilidad garantizada
             finetune_vision_layers=True,       # Fine-tunea el encoder visual
             finetune_language_layers=True,     # Fine-tunea el LLM para output JSON
             finetune_attention_modules=True,
