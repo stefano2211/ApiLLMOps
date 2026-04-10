@@ -42,17 +42,17 @@ async def upload_dataset(
                 if not chunk:
                     break
                 await out_file.write(chunk)
-                
+
         # Re-subir al Bucket como partición única independiente
         storage.upload_file(bucket, object_name, local_chunk_file)
-        
-        # Limpiar
-        if os.path.exists(local_chunk_file):
-            os.remove(local_chunk_file)
 
         logger.info(f"Dataset securely partitioned to S3: {bucket}/{object_name}")
         return {"status": "success", "message": f"Data chunk uploaded to S3 bucket: {bucket}/{object_name}"}
-        
+
     except Exception as e:
         logger.error(f"Error appending dataset to MinIO: {e}")
         raise HTTPException(status_code=500, detail="Internal S3 Server Error")
+
+    finally:
+        if os.path.exists(local_chunk_file):
+            os.remove(local_chunk_file)

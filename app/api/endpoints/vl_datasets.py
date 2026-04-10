@@ -47,11 +47,13 @@ async def upload_vl_dataset(
     bucket = settings.S3_BUCKET_DATALAKE_VL
 
     try:
-        # Descargar histórico si existe para hacer append
-        try:
-            storage.download_file(bucket, object_name, local_path)
+        # Descargar histórico si existe para hacer append.
+        # download_file() returns False (not raises) for NoSuchKey, so any exception here
+        # is a real infrastructure error (network, auth, bucket missing) and must propagate.
+        found = storage.download_file(bucket, object_name, local_path)
+        if found:
             logger.info(f"[VL Dataset] Histórico descargado: {object_name}")
-        except Exception:
+        else:
             logger.info(f"[VL Dataset] Nuevo archivo VL: {object_name}")
 
         # Append en disco local

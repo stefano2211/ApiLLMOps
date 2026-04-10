@@ -16,14 +16,18 @@ Flujo de 4 pasos:
   4. Export GGUF + mmproj → MinIO → Webhook OTA al Edge
 """
 
-from celery import shared_task
-from loguru import logger
-import time
-import requests
-import os
 import gc
 import json
+import os
+import shutil
+import tarfile
 import threading
+import time
+
+import requests
+from celery import shared_task
+from loguru import logger
+
 from app.core.config import settings
 
 
@@ -78,6 +82,8 @@ def start_vl_finetuning_task(
     model = None
     tokenizer = None
     trainer = None
+    export_dir = None
+    tar_path = None
 
     try:
         # ── PASO 1: Agregar datasets VL (screenshots + acciones) ────────────
@@ -158,8 +164,6 @@ def start_vl_finetuning_task(
         logger.info("--> [Paso 4] Exportando LoRA multimodal en Safetensors...")
 
         export_dir = f"/tmp/models/{tenant_id}-vl-lora"
-        import shutil
-        import tarfile
         if os.path.exists(export_dir):
             shutil.rmtree(export_dir, ignore_errors=True)
         os.makedirs(export_dir, exist_ok=True)
@@ -233,7 +237,22 @@ def start_vl_finetuning_task(
                 torch.cuda.empty_cache()
         except Exception:
             pass
-        logger.info("--> VRAM liberada.")
+
+        # Limpieza de archivos temporales (también en caso de fallo)
+        if os.path.exists(local_vl_path):
+            try:
+                os.remove(local_vl_path)
+            except OSError:
+                pass
+        if export_dir and os.path.exists(export_dir):
+            shutil.rmtree(export_dir, ignore_errors=True)
+        if tar_path and os.path.exists(tar_path):
+            try:
+                os.remove(tar_path)
+            except OSError:
+                pass
+
+        logger.info("--> VRAM y archivos temporales liberados.")
 
 
 # ── Funciones auxiliares ─────────────────────────────────────────────────────

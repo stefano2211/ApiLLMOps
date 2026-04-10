@@ -1,13 +1,17 @@
-from celery import shared_task
-from loguru import logger
-import time
-import requests
-import os
 import gc
 import json
 import logging
+import os
+import shutil
+import tarfile
 import threading
+import time
 from datetime import datetime
+
+import requests
+from celery import shared_task
+from loguru import logger
+
 from app.core.config import settings
 
 @shared_task(bind=True)
@@ -61,6 +65,8 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
     model = None
     tokenizer = None
     trainer = None
+    export_dir = None
+    tar_path = None
     
     try:
         # --- PASO 1: Chequeo de Data y Carga del Modelo Base ---
@@ -92,7 +98,8 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             model_name=base_model,
             max_seq_length=1024, # Reducido a 1024 para evitar OOM
             dtype=None, # Auto-detecta fp16 o bf16
-            load_in_4bit=True, # Qwen3.5: 4-bit NO recomendado por Unsloth (custom Triton kernels)
+            load_in_4bit=True, # QLoRA (4-bit): ~75% menos VRAM vs LoRA 16-bit, marginalmente menos preciso.
+                           # Unsloth recomienda load_in_4bit=False (LoRA puro) para Qwen3.5 si hay VRAM suficiente.
         )
 
         # --- PASO 2: Formateo de Datos ---
@@ -168,8 +175,6 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         export_dir = f"/tmp/models/{tenant_id}-v2-lora"
         
         # Limpiar residuos fantasmas
-        import shutil
-        import tarfile
         if os.path.exists(export_dir):
             shutil.rmtree(export_dir, ignore_errors=True)
             
@@ -241,9 +246,28 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             del model
         if tokenizer is not None:
             del tokenizer
-            
+
         gc.collect()
-        if 'torch' in locals() or 'torch' in globals():
-            torch.cuda.empty_cache()
-            
-        logger.info("--> GPU Memory Liberada correctamente.")
+        try:
+            import torch as _torch
+            if _torch.cuda.is_available():
+                _torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        # Limpieza de archivos temporales (también en caso de fallo)
+        for _path in [local_dataset_path]:
+            try:
+                if os.path.exists(_path):
+                    os.remove(_path)
+            except OSError:
+                pass
+        if export_dir and os.path.exists(export_dir):
+            shutil.rmtree(export_dir, ignore_errors=True)
+        if tar_path and os.path.exists(tar_path):
+            try:
+                os.remove(tar_path)
+            except OSError:
+                pass
+
+        logger.info("--> GPU Memory y archivos temporales liberados.")
