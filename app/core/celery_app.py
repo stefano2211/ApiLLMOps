@@ -18,5 +18,8 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1, # Prevent a worker from holding multiple heavy jobs
     task_track_started=True,
     task_time_limit=3600 * 5,  # Max 5 hours for training
-    imports=["app.domain.services.unsloth_trainer"],
+    imports=[
+        "app.domain.services.unsloth_trainer",
+        "app.domain.services.vl_trainer",
+    ],
 )

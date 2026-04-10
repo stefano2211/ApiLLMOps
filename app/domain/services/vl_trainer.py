@@ -91,10 +91,10 @@ def start_vl_finetuning_task(
             )
 
         # ── PASO 2: Cargar FastVisionModel en 4-bit ──────────────────────────
-        logger.info(f"--> [Paso 2] Cargando FastVisionModel {base_model} en 4-bit...")
+        logger.info(f"--> [Paso 2] Cargando FastVisionModel {base_model} en 16-bit LoRA...")
         model, tokenizer = FastVisionModel.from_pretrained(
             model_name=base_model,
-            load_in_4bit=True,
+            load_in_4bit=True, # VOLVEMOS a 4-bit para evitar OOM 
             use_gradient_checkpointing="unsloth",
             max_seq_length=2048,   # WARN 4 fix: debe coincidir con SFTConfig.max_seq_length
         )

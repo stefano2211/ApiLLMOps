@@ -67,9 +67,6 @@ async def upload_vl_dataset(
         # Re-subir al bucket
         storage.upload_file(bucket, object_name, local_path)
 
-        if os.path.exists(local_path):
-            os.remove(local_path)
-
         logger.info(f"[VL Dataset] ✅ Dataset VL subido: {bucket}/{object_name}")
         return {
             "status": "success",
@@ -80,3 +77,6 @@ async def upload_vl_dataset(
     except Exception as e:
         logger.error(f"[VL Dataset] Error subiendo a MinIO: {e}")
         raise HTTPException(status_code=500, detail="Error interno al subir dataset VL")
+    finally:
+        if os.path.exists(local_path):
+            os.remove(local_path)

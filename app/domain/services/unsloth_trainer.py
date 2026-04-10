@@ -87,12 +87,12 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         if not found_data:
             raise FileNotFoundError(f"No se encontraron datasets para {tenant_id} en S3.")
             
-        logger.info(f"--> [Paso 1.1] Cargando modelo base {base_model} en 4-bits...")
+        logger.info(f"--> [Paso 1.1] Cargando modelo base {base_model} en 16-bit LoRA...")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=base_model,
-            max_seq_length=1024, # Safe bound para secuencias de 500-600 tokens
+            max_seq_length=1024, # Reducido a 1024 para evitar OOM
             dtype=None, # Auto-detecta fp16 o bf16
-            load_in_4bit=True,
+            load_in_4bit=True, # Qwen3.5: 4-bit NO recomendado por Unsloth (custom Triton kernels)
         )
 
         # --- PASO 2: Formateo de Datos ---
@@ -131,19 +131,19 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             tokenizer=tokenizer,
             train_dataset=dataset,
             dataset_text_field="text",
-            max_seq_length=1024, # Safe bound para evitar el crash de Dynamo con secuencias > 512
+            max_seq_length=1024, # Coincide con from_pretrained max_seq_length
             dataset_num_proc=2,
             packing=False,
             args=TrainingArguments(
                 per_device_train_batch_size=1, 
-                gradient_accumulation_steps=8, # Aumentado de 4 a 8
+                gradient_accumulation_steps=4, # Aumentado de 4 a 8
                 warmup_ratio=0.1,
                 num_train_epochs=epochs,
                 learning_rate=2e-4,
                 fp16=not is_bfloat16_supported(),
                 bf16=is_bfloat16_supported(),
                 logging_steps=1,
-                optim="adamw_8bit",
+                optim="paged_adamw_8bit", # Usar paged adamw para descargar estados del optimizador a la RAM de CPU
                 weight_decay=0.01,
                 lr_scheduler_type="cosine",
                 seed=3407,
@@ -213,7 +213,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
                 webhook_headers = {"x-api-key": settings.API_KEY}
                 requests.post(
                     webhook_url,
-                    json={"model_tag": f"{tenant_id}-v2"},
+                    json={"model_tag": f"{tenant_id}-v2", "model_type": "text"},
                     headers=webhook_headers,
                     timeout=10,
                 )

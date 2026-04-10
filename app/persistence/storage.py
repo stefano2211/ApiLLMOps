@@ -19,7 +19,7 @@ class MinioManager:
     def init_buckets(self):
         """Creates buckets if they do not exist."""
         try:
-            for bucket in [settings.S3_BUCKET_DATALAKE, settings.S3_BUCKET_MODELS]:
+            for bucket in [settings.S3_BUCKET_DATALAKE, settings.S3_BUCKET_DATALAKE_VL, settings.S3_BUCKET_MODELS]:
                 if not self.client.bucket_exists(bucket):
                     self.client.make_bucket(bucket)
         except S3Error as e:

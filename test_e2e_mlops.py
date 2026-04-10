@@ -57,7 +57,7 @@ def test_2_trigger_mothership_training():
     headers = {"x-api-key": MOTHERSHIP_API_KEY}
     payload = {
         "tenant_id": "aura_tenant_01",
-        "base_model": "unsloth/Qwen2.5-3B-bnb-4bit",
+        "base_model": "unsloth/Qwen3.5-2B",
         "epochs": 1,
         "webhook_url": "http://host.docker.internal:8000/mlops/webhook/model-ready"
     }
