@@ -20,11 +20,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# CORS — only enabled when specific origins are configured.
+# allow_credentials=True is NOT compatible with allow_origins=["*"] per the CORS spec.
 if settings.BACKEND_CORS_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[str(origin) for origin in settings.BACKEND_CORS_ORIGINS],
+        allow_origins=[str(o) for o in settings.BACKEND_CORS_ORIGINS],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

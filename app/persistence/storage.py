@@ -7,14 +7,29 @@ import os
 
 class MinioManager:
     def __init__(self):
-        # Remove http/https from endpoint for the SDK client
-        endpoint = settings.MINIO_ENDPOINT.replace("http://", "").replace("https://", "")
+        # Internal client — used for all read/write operations (upload, download, list).
+        # Uses MINIO_ENDPOINT (e.g. "minio:9000" inside Docker).
+        internal_endpoint = settings.MINIO_ENDPOINT.replace("http://", "").replace("https://", "")
         self.client = Minio(
-            endpoint,
+            internal_endpoint,
             access_key=settings.MINIO_ACCESS_KEY,
             secret_key=settings.MINIO_SECRET_KEY,
-            secure=settings.MINIO_ENDPOINT.startswith("https://")
+            secure=settings.MINIO_ENDPOINT.startswith("https://"),
         )
+
+        # External client — used ONLY for generating presigned URLs that the Edge can reach.
+        # Uses MINIO_EXTERNAL_ENDPOINT (e.g. "host.docker.internal:9002" or a public hostname).
+        # Falls back to the internal client if no external endpoint is configured.
+        external_endpoint = settings.MINIO_EXTERNAL_ENDPOINT.replace("http://", "").replace("https://", "")
+        if external_endpoint and external_endpoint != internal_endpoint:
+            self._presign_client = Minio(
+                external_endpoint,
+                access_key=settings.MINIO_ACCESS_KEY,
+                secret_key=settings.MINIO_SECRET_KEY,
+                secure=settings.MINIO_EXTERNAL_ENDPOINT.startswith("https://"),
+            )
+        else:
+            self._presign_client = self.client
 
     def init_buckets(self):
         """Creates buckets if they do not exist."""
@@ -46,11 +61,17 @@ class MinioManager:
         return True
 
     def get_presigned_url(self, bucket: str, object_name: str, expires=datetime.timedelta(hours=2)) -> str:
-        """Returns a temporary download link for the edge device."""
+        """Returns a temporary download link for the edge device using the external endpoint."""
         try:
-            # Genera la URL. Si MINIO_ENDPOINT y MINIO_EXTERNAL_ENDPOINT son el mismo
-            # (ej. host.docker.internal:9002), la firma será válida para el Edge Node.
-            return self.client.presigned_get_object(bucket, object_name, expires=expires)
+            self.client.stat_object(bucket, object_name)
+        except S3Error as e:
+            if e.code in ("NoSuchKey", "NoSuchObject"):
+                logger.warning(f"[MinIO] Object not found, cannot generate presigned URL: {bucket}/{object_name}")
+                return ""
+            logger.error(f"[MinIO] stat_object error: {e}")
+            return ""
+        try:
+            return self._presign_client.presigned_get_object(bucket, object_name, expires=expires)
         except S3Error as e:
             logger.error(f"Error generating presigned URL: {e}")
             return ""

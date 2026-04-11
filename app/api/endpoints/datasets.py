@@ -21,9 +21,8 @@ async def upload_dataset(
     if not file.filename.endswith(".jsonl"):
         raise HTTPException(status_code=400, detail="Only .jsonl files are supported")
         
-    os.makedirs("/tmp/datalake", exist_ok=True)
     import uuid
-    # Nombre de objeto dinámico: el nombre que viene del Edge (ej: aura_tenant_01_Sensor_Caldera.jsonl)
+    os.makedirs(settings.DATA_LAKE_PATH, exist_ok=True)
     base_name = file.filename
     safe_uuid = str(uuid.uuid4())[:8]
     if base_name.endswith(".jsonl"):
@@ -31,7 +30,7 @@ async def upload_dataset(
     else:
         object_name = f"{base_name}_{safe_uuid}.jsonl"
 
-    local_chunk_file = f"/tmp/datalake/{object_name}"
+    local_chunk_file = os.path.join(settings.DATA_LAKE_PATH, object_name)
     bucket = settings.S3_BUCKET_DATALAKE
     
     try:

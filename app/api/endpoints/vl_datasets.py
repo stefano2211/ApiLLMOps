@@ -41,9 +41,10 @@ async def upload_vl_dataset(
     if not file.filename.endswith(".jsonl"):
         raise HTTPException(status_code=400, detail="Solo se permiten archivos .jsonl")
 
-    os.makedirs("/tmp/datalake-vl", exist_ok=True)
+    vl_lake_path = settings.DATA_LAKE_PATH.rstrip("/") + "-vl"
+    os.makedirs(vl_lake_path, exist_ok=True)
     object_name = f"{tenant_id}_vl_{tool_name}.jsonl"
-    local_path = f"/tmp/datalake-vl/{object_name}"
+    local_path = os.path.join(vl_lake_path, object_name)
     bucket = settings.S3_BUCKET_DATALAKE_VL
 
     try:
@@ -56,9 +57,10 @@ async def upload_vl_dataset(
         else:
             logger.info(f"[VL Dataset] Nuevo archivo VL: {object_name}")
 
-        # Append en disco local
+        # Append en disco local — getsize() is the real guard; open("ab") always creates the file
+        file_size_before = os.path.getsize(local_path) if os.path.exists(local_path) else 0
         async with aiofiles.open(local_path, "ab") as out_file:
-            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            if file_size_before > 0:
                 await out_file.write(b"\n")
             while True:
                 chunk = await file.read(1024 * 1024)  # chunks de 1MB

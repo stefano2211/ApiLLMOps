@@ -13,7 +13,7 @@ Flujo de 4 pasos:
   1. Descarga datasets VL (screenshots + acciones) de MinIO datalake-vl
   2. Carga FastVisionModel (Qwen2.5-VL-3B) en 4-bit con LoRA
   3. Entrena con SFTConfig + UnslothVisionDataCollator
-  4. Export GGUF + mmproj → MinIO → Webhook OTA al Edge
+  4. Export Safetensors LoRA → tar.gz → MinIO → Webhook OTA al Edge
 """
 
 import gc
@@ -21,8 +21,6 @@ import json
 import os
 import shutil
 import tarfile
-import threading
-import time
 
 import requests
 from celery import shared_task
@@ -45,7 +43,7 @@ def start_vl_finetuning_task(
       1. Agrega datasets VL de MinIO datalake-vl
       2. Carga FastVisionModel en 4-bit con LoRA
       3. Entrena con datos de screenshots + acciones
-      4. Export GGUF + mmproj → MinIO → Webhook OTA
+      4. Export Safetensors LoRA → tar.gz → MinIO → Webhook OTA
     """
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
     logger.info(
@@ -71,7 +69,7 @@ def start_vl_finetuning_task(
 
     except ImportError as e:
         logger.error(f"[VL-MLOps] FATAL: Librerías GPU no disponibles: {e}")
-        return {"status": "error", "detail": f"Missing GPU libraries: {e}"}
+        raise RuntimeError(f"Missing GPU libraries: {e}") from e
 
     from app.persistence.storage import storage
 
@@ -86,7 +84,8 @@ def start_vl_finetuning_task(
     tar_path = None
 
     try:
-        # ── PASO 1: Agregar datasets VL (screenshots + acciones) ────────────
+        # ── PASO 1: Agregar datasets VL (screenshots + acciones) ──────────────────
+        self.update_state(state="PROGRESS", meta={"step": 1, "msg": f"Descargando datasets VL de {bucket_vl}"})
         logger.info(f"--> [Paso 1] Descargando datasets VL de {bucket_vl} para {tenant_id}...")
         has_vl_data = _aggregate_vl_datasets(storage, bucket_vl, tenant_id, local_vl_path)
 
@@ -97,6 +96,7 @@ def start_vl_finetuning_task(
             )
 
         # ── PASO 2: Cargar FastVisionModel en 4-bit ──────────────────────────
+        self.update_state(state="PROGRESS", meta={"step": 2, "msg": f"Cargando FastVisionModel {base_model}"})
         logger.info(f"--> [Paso 2] Cargando FastVisionModel {base_model} en 16-bit LoRA...")
         model, tokenizer = FastVisionModel.from_pretrained(
             model_name=base_model,
@@ -123,6 +123,7 @@ def start_vl_finetuning_task(
         )
 
         # ── PASO 3: Entrenamiento VL (Computer Use puro) ─────────────────────
+        self.update_state(state="PROGRESS", meta={"step": 3, "msg": f"Entrenando VL — {vl_epochs} épocas"})
         logger.info(f"--> [Paso 3] Cargando dataset VL desde {local_vl_path}...")
         vl_dataset = _load_vl_dataset(local_vl_path)
         logger.info(f"    Dataset cargado: {len(vl_dataset)} samples de computer use.")
@@ -161,6 +162,7 @@ def start_vl_finetuning_task(
         logger.info("✅ [Paso 3] Entrenamiento VL completado.")
 
         # ── PASO 4: Export Safetensors LoRA → MinIO → Webhook ──────────────────
+        self.update_state(state="PROGRESS", meta={"step": 4, "msg": "Exportando LoRA safetensors y subiendo a S3"})
         logger.info("--> [Paso 4] Exportando LoRA multimodal en Safetensors...")
 
         export_dir = f"/tmp/models/{tenant_id}-vl-lora"
@@ -219,7 +221,7 @@ def start_vl_finetuning_task(
 
     except Exception as e:
         logger.error(f"[VL-MLOps] ERROR EN PIPELINE VL: {str(e)}")
-        return {"status": "error", "detail": str(e)}
+        raise  # Let Celery mark the task as FAILURE so status endpoint reflects the real state
 
     finally:
         # Limpieza VRAM — siempre

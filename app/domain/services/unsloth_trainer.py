@@ -4,8 +4,6 @@ import logging
 import os
 import shutil
 import tarfile
-import threading
-import time
 from datetime import datetime
 
 import requests
@@ -54,7 +52,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
                 logger.warning("[MLOps] DataCollatorForCompletionOnlyLM no disponible. Entrenando sobre texto completo (fallback).")
     except ImportError as e:
         logger.error(f"[MLOps] LIBRERÍAS GPU FATAL ERROR: {e}. Se cancela el Job.")
-        return {"status": "error", "detail": "Missing GPU libraries or Torch"}
+        raise RuntimeError(f"Missing GPU libraries: {e}") from e
 
     from app.persistence.storage import storage
     
@@ -70,6 +68,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
     
     try:
         # --- PASO 1: Chequeo de Data y Carga del Modelo Base ---
+        self.update_state(state="PROGRESS", meta={"step": 1, "msg": f"Agregando datasets de {tenant_id}"})
         logger.info(f"--> [Paso 1] Agregando todos los datasets de {tenant_id}...")
         
         objects = storage.list_objects(bucket_datalake, prefix=f"{tenant_id}_")
@@ -93,6 +92,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         if not found_data:
             raise FileNotFoundError(f"No se encontraron datasets para {tenant_id} en S3.")
             
+        self.update_state(state="PROGRESS", meta={"step": 1, "msg": f"Cargando modelo base {base_model}"})
         logger.info(f"--> [Paso 1.1] Cargando modelo base {base_model} en 16-bit LoRA...")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=base_model,
@@ -103,6 +103,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         )
 
         # --- PASO 2: Formateo de Datos ---
+        self.update_state(state="PROGRESS", meta={"step": 2, "msg": "Formateando dataset a ChatML"})
         logger.info(f"--> [Paso 2] Cargando Dataset {local_dataset_path} a ChatML...")
         dataset = load_dataset("json", data_files={"train": local_dataset_path}, split="train")
 
@@ -117,6 +118,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         dataset = dataset.map(formatting_prompts_func, batched=True)
 
         # --- PASO 3: Inyección LoRA ---
+        self.update_state(state="PROGRESS", meta={"step": 3, "msg": "Inyectando adaptadores LoRA"})
         logger.info("--> [Paso 3] Inyectando LoRA (QLoRA-All, r=16, alpha=32)...")
         model = FastLanguageModel.get_peft_model(
             model,
@@ -131,6 +133,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         )
 
         # --- PASO 4: Bucle de Entrenamiento (Data Replay) ---
+        self.update_state(state="PROGRESS", meta={"step": 4, "msg": f"Entrenando modelo — {epochs} épocas"})
         logger.info(f"--> [Paso 4] Entrenando modelo (Settings SOTA). Epochs: {epochs}...")
         
         trainer = SFTTrainer(
@@ -143,7 +146,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             packing=False,
             args=TrainingArguments(
                 per_device_train_batch_size=1, 
-                gradient_accumulation_steps=4, # Aumentado de 4 a 8
+                gradient_accumulation_steps=4,
                 warmup_ratio=0.1,
                 num_train_epochs=epochs,
                 learning_rate=2e-4,
@@ -171,6 +174,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         trainer_stats = trainer.train()
 
         # --- PASO 5: Exportación LoRA y Compresión (CRÍTICO PARA vLLM) ---
+        self.update_state(state="PROGRESS", meta={"step": 5, "msg": "Exportando LoRA safetensors y subiendo a S3"})
         logger.info("--> [Paso 5] Guardando LoRA en safetensors...")
         export_dir = f"/tmp/models/{tenant_id}-v2-lora"
         
@@ -235,7 +239,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
 
     except Exception as e:
         logger.error(f"[MLOps] ERROR EN PIPELINE DE ENTRENAMIENTO: {str(e)}")
-        return {"status": "error", "detail": str(e)}
+        raise  # Let Celery mark the task as FAILURE so status endpoint reflects the real state
 
     finally:
         # Limpieza crítica de VRAM pase lo que pase
