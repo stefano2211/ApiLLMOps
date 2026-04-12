@@ -1,56 +1,58 @@
-FROM python:3.12-slim
+# ===========================================================================
+# Dockerfile.worker — Celery GPU Worker para Fine-Tuning con Unsloth
+#
+# Imagen base: unsloth/unsloth:latest
+# Esta imagen es la recomendada oficialmente para evitar el "Dependency Hell"
+# ya que incluye las versiones exactas, compiladas y compatibles de:
+# PyTorch, CUDA, Unsloth, BitsAndBytes, Transformers, TRL, PEFT, Triton, xformers.
+#
+# Aunque la imagen tiene utilidades extra (Jupyter/SSH), al sobreescribir el CMD
+# con Celery, estas utilidades NUNCA se ejecutan en fondo, operando de
+# manera "headless" y consumiendo únicamente los recursos del worker.
+#
+# Referencia: https://hub.docker.com/r/unsloth/unsloth
+# ===========================================================================
+FROM unsloth/unsloth:latest
 
+# Cambiamos a root ya que la imagen viene con usuario 'unsloth' por defecto
+# lo cual puede causar problemas de permisos montando volúmenes o al ejecutar Celery.
+USER root
 WORKDIR /app
 
-ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    build-essential \
-    libcurl4-openssl-dev \
-    curl \
-    libssl-dev \
-    cmake \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir uv
-
 # ===========================================================================
-# CAPA 1: PyTorch + CUDA 12.8 (cu128)
+# CAPA 1: Dependencias del proyecto (Celery, FastAPI, MinIO, etc.)
+# Solo paquetes que NO interfieren con el core de ML.
+# Utilizamos `--break-system-packages` por seguridad si Ubuntu 24.04 es base.
 # ===========================================================================
-RUN uv pip install --system --no-cache \
-    torch torchvision torchaudio \
-    --extra-index-url https://download.pytorch.org/whl/cu128
-
-# ===========================================================================
-# CAPA 2: Unsloth desde GIT (Versión Blackwell/SOTA)
-# Instalar directamente desde GitHub es la recomendación oficial para 
-# evitar conflictos de NameError: PreTrainedConfig en Docker.
-# ===========================================================================
-RUN uv pip install --system --no-cache \
-    "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" \
-    "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo.git"
-
-# ===========================================================================
-# CAPA 3: Satélites y dependencias de runtime (Unsloth ya instaló transformers/trl)
-# Nos aseguramos de tener psutil y hf-transfer.
-# ===========================================================================
-RUN uv pip install --system --no-cache \
-    "psutil" \
+RUN pip install --no-cache-dir \
+    "fastapi>=0.111.0" \
+    "uvicorn>=0.30.1" \
+    "pydantic>=2.7.4" \
+    "pydantic-settings>=2.3.4" \
+    "celery>=5.4.0" \
+    "redis>=5.0.6" \
+    "aiofiles>=24.1.0" \
+    "requests>=2.32.3" \
+    "loguru>=0.7.2" \
+    "minio>=7.2.7" \
+    "python-multipart>=0.0.9" \
     "hf-transfer" \
-    "bitsandbytes" \
-    "accelerate" \
-    "datasets" \
-    "transformers>=5.0.0" \
-    "pillow"
+    "psutil"
 
 # ===========================================================================
-# CAPA 4: Dependencias del proyecto (Celery, FastAPI, MinIO, etc.)
+# CAPA 1.5: Upgrades requeridos para Qwen 3.5 (Año 2026)
 # ===========================================================================
-COPY pyproject.toml .
-RUN uv pip install --system --no-cache .
+RUN pip install --upgrade --no-cache-dir \
+    "transformers>=5.2.0" \
+    unsloth unsloth_zoo
 
+# ===========================================================================
+# CAPA 2: Código de aplicación
+# ===========================================================================
 COPY . .
 
+# Sobreescribimos el ENTRYPOINT y CMD de Jupyter por nuestro worker de Celery
+ENTRYPOINT []
 CMD ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-P", "solo", "--max-tasks-per-child=1"]

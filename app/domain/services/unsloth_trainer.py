@@ -38,18 +38,11 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         from unsloth import FastLanguageModel, is_bfloat16_supported
         from unsloth.chat_templates import get_chat_template, standardize_sharegpt
         from datasets import load_dataset
-        from transformers import TrainingArguments
-        # DataCollatorForCompletionOnlyLM es opcional — cambia de ubicación según versión de TRL
-        _DataCollator = None
-        try:
-            from trl import SFTTrainer, DataCollatorForCompletionOnlyLM as _DataCollator
-        except ImportError:
-            try:
-                from trl import SFTTrainer
-                from trl.trainer.utils import DataCollatorForCompletionOnlyLM as _DataCollator
-            except ImportError:
-                from trl import SFTTrainer
-                logger.warning("[MLOps] DataCollatorForCompletionOnlyLM no disponible. Entrenando sobre texto completo (fallback).")
+        # CRÍTICO: Usar SFTConfig en vez de TrainingArguments.
+        # SFTConfig hereda de TrainingArguments pero gestiona dataset_text_field
+        # y la tokenización internamente, evitando que el procesador multimodal
+        # de Qwen3.5 interprete texto como imágenes.
+        from trl import SFTTrainer, SFTConfig
     except ImportError as e:
         logger.error(f"[MLOps] LIBRERÍAS GPU FATAL ERROR: {e}. Se cancela el Job.")
         raise RuntimeError(f"Missing GPU libraries: {e}") from e
@@ -107,15 +100,88 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         logger.info(f"--> [Paso 2] Cargando Dataset {local_dataset_path} a ChatML...")
         dataset = load_dataset("json", data_files={"train": local_dataset_path}, split="train")
 
+        logger.info(f"--> [Paso 2.1] Columnas crudas detectadas: {dataset.column_names}")
+
+        # ---------------------------------------------------------------
+        # Normalizar formato mixto ANTES de standardize_sharegpt.
+        #
+        # El pipeline recibe datos de MÚLTIPLES fuentes con formatos distintos:
+        #   1. DbCollector (formatter.py) → ShareGPT:
+        #      {"conversations": [{"from":"user","value":"..."},{"from":"assistant","value":"..."}]}
+        #   2. e2e_test_runner / Edge mock → OpenAI ChatML:
+        #      {"messages": [{"role":"user","content":"..."},{"role":"assistant","content":"..."}]}
+        #
+        # standardize_sharegpt() REQUIERE columna "conversations" con "from"/"value".
+        # Aquí unificamos todo a ese formato ANTES de llamarla.
+        # ---------------------------------------------------------------
+        def _normalize_to_sharegpt(example):
+            convo = example.get("conversations")
+            msgs = example.get("messages")
+
+            # Caso 1: Ya tiene "conversations" con "from"/"value" → OK
+            if convo and isinstance(convo, list) and len(convo) > 0:
+                first = convo[0]
+                if isinstance(first, dict) and "from" in first:
+                    return {"conversations": convo}
+                # Edge case: conversations con role/content
+                if isinstance(first, dict) and "role" in first:
+                    return {"conversations": [
+                        {"from": m.get("role", "user"), "value": m.get("content", "")}
+                        for m in convo if m is not None
+                    ]}
+
+            # Caso 2: Tiene "messages" (OpenAI ChatML) → Convertir a ShareGPT
+            if msgs and isinstance(msgs, list) and len(msgs) > 0:
+                return {"conversations": [
+                    {"from": m.get("role", "user"), "value": m.get("content", "")}
+                    for m in msgs if m is not None
+                ]}
+
+            # Fila inválida
+            return {"conversations": []}
+
+        dataset = dataset.map(_normalize_to_sharegpt)
+        dataset = dataset.filter(lambda x: len(x["conversations"]) > 0)
+        # Limpiar columnas sobrantes (messages, etc.) ANTES de standardize
+        cols_to_drop = [c for c in dataset.column_names if c != "conversations"]
+        if cols_to_drop:
+            dataset = dataset.remove_columns(cols_to_drop)
+        logger.info(f"--> [Paso 2.2] Dataset normalizado: {len(dataset)} filas. Columnas: {dataset.column_names}")
+
+        # standardize_sharegpt: convierte from/value → role/content para apply_chat_template
         tokenizer = get_chat_template(tokenizer, chat_template="chatml")
-        
+        dataset = standardize_sharegpt(dataset)
+
         def formatting_prompts_func(examples):
             convos = examples["conversations"]
-            texts = [tokenizer.apply_chat_template(convo, tokenize=False, add_generation_prompt=False) for convo in convos]
+            texts = [
+                tokenizer.apply_chat_template(convo, tokenize=False, add_generation_prompt=False)
+                for convo in convos
+            ]
             return {"text": texts}
 
-        dataset = standardize_sharegpt(dataset)
         dataset = dataset.map(formatting_prompts_func, batched=True)
+        
+        # CRÍTICO: Tokenización manual con argumentos NOMBRADOS (text=...)
+        # El tokenizer de Qwen3.5 es multimodal. Si le pasamos el texto posicionalmente
+        # (ej. tokenizer(examples["text"])), lo interpreta erróneamente como una imagen
+        # y falla con "Incorrect image source". Esto también arregla el error de TRL
+        # donde falla el tokenizado interno al usar dataset_text_field.
+        def tokenize_func(examples):
+            return tokenizer(
+                text=examples["text"], 
+                truncation=True, 
+                max_length=1024, 
+                padding=False
+            )
+            
+        dataset = dataset.map(tokenize_func, batched=True)
+        logger.info(f"--> [Paso 2.3] Dataset tokenizado manualmente. Columnas: {dataset.column_names}")
+
+        # Limpiar columna "text" para que solo queden input_ids y attention_mask
+        if "text" in dataset.column_names:
+            dataset = dataset.remove_columns(["text"])
+        logger.info(f"--> [Paso 2.4] Dataset final para Trainer. Columnas: {dataset.column_names}")
 
         # --- PASO 3: Inyección LoRA ---
         self.update_state(state="PROGRESS", meta={"step": 3, "msg": "Inyectando adaptadores LoRA"})
@@ -133,42 +199,36 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         )
 
         # --- PASO 4: Bucle de Entrenamiento (Data Replay) ---
+        # Siguiendo receta oficial de Unsloth para Qwen3.5:
+        # https://unsloth.ai/docs/models/qwen3.5/fine-tune#quickstart
         self.update_state(state="PROGRESS", meta={"step": 4, "msg": f"Entrenando modelo — {epochs} épocas"})
         logger.info(f"--> [Paso 4] Entrenando modelo (Settings SOTA). Epochs: {epochs}...")
         
+        # CRÍTICO: Usar SFTConfig — NO TrainingArguments.
         trainer = SFTTrainer(
             model=model,
             tokenizer=tokenizer,
             train_dataset=dataset,
-            dataset_text_field="text",
-            max_seq_length=1024, # Coincide con from_pretrained max_seq_length
-            dataset_num_proc=2,
-            packing=False,
-            args=TrainingArguments(
+            args=SFTConfig(
+                # SIN dataset_text_field, ya tokenizado
+                max_seq_length=1024,
+                dataset_num_proc=1,              # Qwen3.5 oficial usa 1
+                packing=False,
                 per_device_train_batch_size=1, 
                 gradient_accumulation_steps=4,
-                warmup_ratio=0.1,
+                warmup_steps=10,
                 num_train_epochs=epochs,
                 learning_rate=2e-4,
                 fp16=not is_bfloat16_supported(),
                 bf16=is_bfloat16_supported(),
                 logging_steps=1,
-                optim="paged_adamw_8bit", # Usar paged adamw para descargar estados del optimizador a la RAM de CPU
+                optim="adamw_8bit",              # Receta oficial Qwen3.5
                 weight_decay=0.01,
                 lr_scheduler_type="cosine",
                 seed=3407,
                 output_dir="/tmp/outputs",
             ),
         )
-
-        # Entrenar solo en las completaciones multi-turno (SOTA)
-        if _DataCollator is not None:
-            response_template = "<|im_start|>assistant\n"
-            collator = _DataCollator(response_template, tokenizer=tokenizer)
-            trainer.data_collator = collator
-            logger.info("---> Usando DataCollator de completaciones (SOTA multi-turno).")
-        else:
-            logger.warning("---> DataCollator no disponible. Entrenando sobre texto completo.")
 
         logger.info("--> Iniciando Pila Tensorial (Trainer)...")
         trainer_stats = trainer.train()
