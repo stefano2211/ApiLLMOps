@@ -86,13 +86,13 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             raise FileNotFoundError(f"No se encontraron datasets para {tenant_id} en S3.")
             
         self.update_state(state="PROGRESS", meta={"step": 1, "msg": f"Cargando modelo base {base_model}"})
-        logger.info(f"--> [Paso 1.1] Cargando modelo base {base_model} en 16-bit LoRA...")
+        logger.info(f"--> [Paso 1.1] Cargando modelo base {base_model} en bf16 LoRA (16-bit)...")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=base_model,
-            max_seq_length=1024, # Reducido a 1024 para evitar OOM
-            dtype=None, # Auto-detecta fp16 o bf16
-            load_in_4bit=True, # QLoRA (4-bit): ~75% menos VRAM vs LoRA 16-bit, marginalmente menos preciso.
-                           # Unsloth recomienda load_in_4bit=False (LoRA puro) para Qwen3.5 si hay VRAM suficiente.
+            max_seq_length=2048, # Aumentado a 2048: soporta conversaciones industriales más largas
+            dtype=None,          # Auto-detect bf16 (recomendado para Ampere+)
+            load_in_4bit=False,  # Unsloth desaconseja QLoRA para Qwen3.5 por alta degradación cuantizada.
+                                 # Con 24GB VRAM: Qwen3.5-2B en bf16 ocupa ~5GB. Margen amplio.
         )
 
         # --- PASO 2: Formateo de Datos ---
@@ -171,7 +171,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             return tokenizer(
                 text=examples["text"], 
                 truncation=True, 
-                max_length=1024, 
+                max_length=2048,  # Sincronizado con max_seq_length
                 padding=False
             )
             
@@ -211,10 +211,10 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             train_dataset=dataset,
             args=SFTConfig(
                 # SIN dataset_text_field, ya tokenizado
-                max_seq_length=1024,
-                dataset_num_proc=1,              # Qwen3.5 oficial usa 1
+                max_seq_length=2048,         # Sincronizado con from_pretrained
+                dataset_num_proc=1,          # Qwen3.5 oficial usa 1
                 packing=False,
-                per_device_train_batch_size=1, 
+                per_device_train_batch_size=4,  # 2B bf16 en 24GB: batch 4 es cómodo
                 gradient_accumulation_steps=4,
                 warmup_steps=10,
                 num_train_epochs=epochs,
@@ -222,7 +222,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
                 fp16=not is_bfloat16_supported(),
                 bf16=is_bfloat16_supported(),
                 logging_steps=1,
-                optim="adamw_8bit",              # Receta oficial Qwen3.5
+                optim="adamw_8bit",
                 weight_decay=0.01,
                 lr_scheduler_type="cosine",
                 seed=3407,

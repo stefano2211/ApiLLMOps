@@ -19,7 +19,7 @@ router = APIRouter()
 
 class VLTrainingJobRequest(BaseModel):
     tenant_id: str = "aura_tenant_01"
-    base_model: str = "unsloth/Qwen2.5-VL-3B-Instruct-bnb-4bit"  # 3B: óptimo para GUI grounding en edge
+    base_model: str = "Qwen/Qwen3.5-2B"  # Debe coincidir exactamente con el modelo en vllm-sistema1
     vl_epochs: int = 2        # Épocas de entrenamiento con datos de computer use (screenshots + acciones)
     text_epochs: int = 0      # Mantenido por compatibilidad — ignorado (NO hay mezcla de texto en VL trainer)
     webhook_url: Optional[str] = None

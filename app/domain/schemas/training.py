@@ -3,7 +3,10 @@ from typing import Optional
 
 class TrainingJobRequest(BaseModel):
     tenant_id: str
-    base_model: str = Field(..., description="HF model ID de la versión Qwen base", example="unsloth/qwen2.5-7b-bnb-4bit")
+    base_model: str = Field(
+        default="Qwen/Qwen3.5-2B",  # Debe coincidir exactamente con el modelo en vllm-sistema1
+        description="HF model ID del modelo base. Debe ser el mismo que corre en vllm-sistema1."
+    )
     epochs: int = 3
     webhook_url: Optional[HttpUrl] = None
 

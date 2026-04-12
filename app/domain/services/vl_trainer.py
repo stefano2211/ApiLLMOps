@@ -100,9 +100,10 @@ def start_vl_finetuning_task(
         logger.info(f"--> [Paso 2] Cargando FastVisionModel {base_model} en 16-bit LoRA...")
         model, tokenizer = FastVisionModel.from_pretrained(
             model_name=base_model,
-            load_in_4bit=True, # VOLVEMOS a 4-bit para evitar OOM 
+            load_in_4bit=False,            # ⚠️ Unsloth desaconseja QLoRA para Qwen3.5.
+                                           # Con 24GB VRAM: 2B VL en bf16 ocupa ~6-8GB. Margen amplio.
             use_gradient_checkpointing="unsloth",
-            max_seq_length=2048,   # WARN 4 fix: debe coincidir con SFTConfig.max_seq_length
+            max_seq_length=2048,           # Sincronizado con SFTConfig
         )
 
         model = FastVisionModel.get_peft_model(
@@ -135,7 +136,7 @@ def start_vl_finetuning_task(
             train_dataset=vl_dataset,
             data_collator=UnslothVisionDataCollator(model, tokenizer),
             args=SFTConfig(
-                per_device_train_batch_size=1,
+                per_device_train_batch_size=2,  # 2B VL bf16 en 24GB: batch 2 seguro (encoder visual ocupa más)
                 gradient_accumulation_steps=8,
                 warmup_ratio=0.1,
                 num_train_epochs=vl_epochs,
@@ -148,10 +149,10 @@ def start_vl_finetuning_task(
                 lr_scheduler_type="cosine",
                 seed=3407,
                 output_dir="/tmp/outputs_vl",
-                remove_unused_columns=False,        # CRÍTICO para VL
-                dataset_text_field="",              # CRÍTICO — no hay campo de texto plano
-                dataset_kwargs={"skip_prepare_dataset": True},  # CRÍTICO para VL
-                dataloader_num_workers=0,           # OBLIGATORIO — PIL no serializable
+                remove_unused_columns=False,
+                dataset_text_field="",
+                dataset_kwargs={"skip_prepare_dataset": True},
+                dataloader_num_workers=0,  # OBLIGATORIO — PIL no serializable
                 max_seq_length=2048,
             ),
         )

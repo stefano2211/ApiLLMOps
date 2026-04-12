@@ -51,11 +51,12 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATA_LAKE_PATH=/app/data/lake
       - MODELS_OUTPUT_PATH=/app/data/models
-      - MINIO_ENDPOINT=minio:9000             # WARN 5 fix: nombre de servicio interno Docker
-      - MINIO_EXTERNAL_ENDPOINT=host.docker.internal:9002  # externo para presigned URLs accesibles desde el host
+      - MINIO_ENDPOINT=minio:9000             # interno Docker
+      # ⚠️ PRODUCCIÓN: reemplaza con la IP pública del Server B para que el Edge descargue los LoRAs
+      - MINIO_EXTERNAL_ENDPOINT=<IP_LLMOPS>:9002  # IP pública Server B accesible desde IndustrialBackend
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
-      - MOTHERSHIP_API_KEY=${MOTHERSHIP_API_KEY:-default-mothership-secret-key}
+      - API_KEY=${MOTHERSHIP_API_KEY:-default-mothership-secret-key}
     volumes:
       - ./app:/app/app
       - ./data:/app/data
@@ -77,7 +78,7 @@ services:
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
-      - MOTHERSHIP_API_KEY=${MOTHERSHIP_API_KEY:-default-mothership-secret-key}
+      - API_KEY=${MOTHERSHIP_API_KEY:-default-mothership-secret-key}
       # Necesario para Unsloth/Transformers para que no descarguen al contenedor temporal
       - HF_HOME=/app/data/huggingface_cache
     volumes:
