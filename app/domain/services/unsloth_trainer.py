@@ -87,13 +87,32 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
             
         self.update_state(state="PROGRESS", meta={"step": 1, "msg": f"Cargando modelo base {base_model}"})
         logger.info(f"--> [Paso 1.1] Cargando modelo base {base_model} en bf16 LoRA (16-bit)...")
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=base_model,
-            max_seq_length=2048, # Aumentado a 2048: soporta conversaciones industriales más largas
-            dtype=None,          # Auto-detect bf16 (recomendado para Ampere+)
-            load_in_4bit=False,  # Unsloth desaconseja QLoRA para Qwen3.5 por alta degradación cuantizada.
-                                 # Con 24GB VRAM: Qwen3.5-2B en bf16 ocupa ~5GB. Margen amplio.
-        )
+
+        # Validar que el modelo sea compatible con Unsloth
+        # Qwen3.5-9B requiere ~18GB VRAM en bf16, puede fallar en GPUs pequeñas
+        # Preferimos Qwen3.5-2B o Qwen3.5-4B para entrenamiento Edge
+        if "9B" in base_model:
+            logger.warning(f"⚠️  Modelo {base_model} requiere ~18GB VRAM. Considera usar Qwen3.5-2B o 4B.")
+
+        try:
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=base_model,
+                max_seq_length=2048,
+                dtype=torch.bfloat16 if is_bfloat16_supported() else torch.float16,
+                load_in_4bit=False,
+                # Forzar carga en GPU para evitar "meta tensor" error
+                device_map={"": "cuda"} if torch.cuda.is_available() else None,
+            )
+        except Exception as load_err:
+            logger.error(f"❌ Error cargando modelo {base_model}: {load_err}")
+            logger.info("🔄 Intentando fallback con load_in_4bit=True...")
+            # Fallback a QLoRA si bf16 falla (problemas de VRAM o compatibilidad)
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=base_model,
+                max_seq_length=2048,
+                dtype=None,
+                load_in_4bit=True,
+            )
 
         # --- PASO 2: Formateo de Datos ---
         self.update_state(state="PROGRESS", meta={"step": 2, "msg": "Formateando dataset a ChatML"})
