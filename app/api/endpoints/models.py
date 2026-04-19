@@ -21,7 +21,7 @@ def _find_latest_lora(bucket: str, tenant_id: str, suffix: str = "-lora.tar.gz")
 
 
 @router.get("/{tenant_id}/latest/config")
-async def get_latest_model(
+def get_latest_model(
     tenant_id: str,
     api_key: str = Depends(verify_api_key),
 ):
