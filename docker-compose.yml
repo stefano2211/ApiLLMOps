@@ -53,7 +53,7 @@ services:
       - MODELS_OUTPUT_PATH=/app/data/models
       - MINIO_ENDPOINT=minio:9000             # interno Docker
       # ⚠️ PRODUCCIÓN: reemplaza con la IP pública del Server B para que el Edge descargue los LoRAs
-      - MINIO_EXTERNAL_ENDPOINT=149.36.0.115:9002  # IP pública Server B accesible desde IndustrialBackend
+      - MINIO_EXTERNAL_ENDPOINT=${MINIO_EXTERNAL_ENDPOINT:-38.128.233.165:9002}
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
       - API_KEY=${MOTHERSHIP_API_KEY:-default-mothership-secret-key}
@@ -76,7 +76,7 @@ services:
       - DATA_LAKE_PATH=/app/data/lake
       - MODELS_OUTPUT_PATH=/app/data/models
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_EXTERNAL_ENDPOINT=149.36.0.115:9002  # IP pública — para que las URLs presignadas sean accesibles desde el Edge
+      - MINIO_EXTERNAL_ENDPOINT=${MINIO_EXTERNAL_ENDPOINT:-38.128.233.165:9002}
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
       - API_KEY=${MOTHERSHIP_API_KEY:-default-mothership-secret-key}
