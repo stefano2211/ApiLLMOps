@@ -299,14 +299,18 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
                 # x-api-key header is REQUIRED by IndustrialBackend /mlops/webhook/model-ready
                 # Without it, the Edge responds 422 and the OTA update never triggers.
                 webhook_headers = {"x-api-key": settings.API_KEY}
-                requests.post(
+                r = requests.post(
                     webhook_url,
                     json={"model_tag": f"{tenant_id}-v2", "model_type": "text", "tenant_id": tenant_id},
                     headers=webhook_headers,
                     timeout=10,
                 )
+                r.raise_for_status()
+                logger.info(f"--> [WebHook] Edge Notificado Exitosamente. Status: {r.status_code}")
+            except requests.exceptions.HTTPError as http_err:
+                logger.error(f"--> [WebHook] Falló comunicación con Edge (HTTP Error): {http_err} - {r.text}")
             except Exception as e:
-                logger.error(f"Webhook failed: {e}")
+                logger.error(f"--> [WebHook] Falló comunicación con Edge: {e}")
         
         logger.info(f"✅ [MLOps] PIPELINE COMPLETADO EXITOSAMENTE para {tenant_id}. Adaptador LoRA .tar.gz disponible en S3.")
                 
