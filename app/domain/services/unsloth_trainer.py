@@ -301,7 +301,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
                 webhook_headers = {"x-api-key": settings.API_KEY}
                 requests.post(
                     webhook_url,
-                    json={"model_tag": f"{tenant_id}-v2", "model_type": "text"},
+                    json={"model_tag": f"{tenant_id}-v2", "model_type": "text", "tenant_id": tenant_id},
                     headers=webhook_headers,
                     timeout=10,
                 )

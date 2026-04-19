@@ -203,6 +203,7 @@ def start_vl_finetuning_task(
                 payload = {
                     "model_tag": f"{tenant_id}-vl",
                     "model_type": "vision",
+                    "tenant_id": tenant_id,
                 }
                 requests.post(
                     webhook_url,
