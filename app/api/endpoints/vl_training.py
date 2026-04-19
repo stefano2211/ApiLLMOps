@@ -1,19 +1,14 @@
 """
 VL Training Endpoint
 ====================
-Dispara el job de entrenamiento VL unificado (2 fases) en el Celery Worker.
-También expone el endpoint para consultar el modelo VL más reciente (presigned URLs).
+Dispara el job de entrenamiento VL (computer use) en el Celery Worker GPU.
 """
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from loguru import logger
-from pydantic import BaseModel, HttpUrl
-from app.core.config import settings
+from pydantic import BaseModel
 from app.core.security import verify_api_key
-from app.persistence.storage import storage
 from app.domain.services.vl_trainer import start_vl_finetuning_task
-from app.api.endpoints.models import _find_latest_lora
-
 router = APIRouter()
 
 
@@ -81,34 +76,3 @@ async def get_vl_job_status(
     }
 
 
-@router.get("/models/{tenant_id}/vl/config")
-async def get_vl_model_config(
-    tenant_id: str,
-    api_key: str = Depends(verify_api_key),
-):
-    """
-    Devuelve la presigned URL del adaptador LoRA VL del tenant.
-    El Edge usa esta URL para OTA: descarga el tar.gz, extrae los pesos a /loras/
-    y llama a POST /v1/load_lora_adapter en vLLM.
-    """
-    bucket = settings.S3_BUCKET_MODELS
-    tar_name = _find_latest_lora(bucket, tenant_id, suffix="-vl-lora.tar.gz")
-
-    if not tar_name:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No VL model found for tenant '{tenant_id}'. Run a VL training job first.",
-        )
-
-    lora_url = storage.get_presigned_url(bucket, tar_name)
-    if not lora_url:
-        raise HTTPException(status_code=500, detail="Failed to generate presigned URL")
-
-    return {
-        "tenant_id": tenant_id,
-        "model_type": "vision",
-        "latest_tag": f"{tenant_id}-vl",
-        "lora_url": lora_url,
-        "format": "safetensors",
-        "base_architecture": "Qwen2.5-VL",
-    }

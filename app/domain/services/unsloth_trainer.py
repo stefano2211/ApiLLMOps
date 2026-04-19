@@ -4,13 +4,14 @@ import logging
 import os
 import shutil
 import tarfile
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from celery import shared_task
 from loguru import logger
 
 from app.core.config import settings
+from app.persistence.storage import storage
 
 @shared_task(bind=True)
 def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, webhook_url: str):
@@ -299,9 +300,16 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
                 # x-api-key header is REQUIRED by IndustrialBackend /mlops/webhook/model-ready
                 # Without it, the Edge responds 422 and the OTA update never triggers.
                 webhook_headers = {"x-api-key": settings.API_KEY}
+                download_url = storage.get_presigned_url(bucket_models, tar_s3_name, expires=timedelta(days=1))
+
                 r = requests.post(
                     webhook_url,
-                    json={"model_tag": f"{tenant_id}-v2", "model_type": "text", "tenant_id": tenant_id},
+                    json={
+                        "model_tag": f"{tenant_id}-v2", 
+                        "model_type": "text", 
+                        "tenant_id": tenant_id,
+                        "download_url": download_url
+                    },
                     headers=webhook_headers,
                     timeout=10,
                 )

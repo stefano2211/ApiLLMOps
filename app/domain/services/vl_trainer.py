@@ -200,10 +200,13 @@ def start_vl_finetuning_task(
         if webhook_url:
             logger.info(f"--> 🔔 Disparando webhook OTA al Edge: {webhook_url}")
             try:
+                import datetime
+                download_url = storage.get_presigned_url(bucket_models, tar_s3_name, expires=datetime.timedelta(days=1))
                 payload = {
                     "model_tag": f"{tenant_id}-vl",
                     "model_type": "vision",
                     "tenant_id": tenant_id,
+                    "download_url": download_url
                 }
                 requests.post(
                     webhook_url,
