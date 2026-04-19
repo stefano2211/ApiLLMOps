@@ -76,6 +76,7 @@ services:
       - DATA_LAKE_PATH=/app/data/lake
       - MODELS_OUTPUT_PATH=/app/data/models
       - MINIO_ENDPOINT=minio:9000
+      - MINIO_EXTERNAL_ENDPOINT=149.36.0.115:9002  # IP pública — para que las URLs presignadas sean accesibles desde el Edge
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
       - API_KEY=${MOTHERSHIP_API_KEY:-default-mothership-secret-key}
