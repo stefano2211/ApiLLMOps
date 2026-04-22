@@ -11,7 +11,7 @@ en start_finetuning_task (pipeline de texto independiente).
 
 Flujo de 4 pasos:
   1. Descarga datasets VL (screenshots + acciones) de MinIO datalake-vl
-  2. Carga FastVisionModel (Qwen2.5-VL-3B) en 4-bit con LoRA
+  2. Carga FastVisionModel (Gemma 4 26B-A4B MoE) 
   3. Entrena con SFTConfig + UnslothVisionDataCollator
   4. Export Safetensors LoRA → tar.gz → MinIO → Webhook OTA al Edge
 """
@@ -95,13 +95,13 @@ def start_vl_finetuning_task(
                 f"Sube datos primero via POST /api/v1/vl/upload"
             )
 
-        # ── PASO 2: Cargar FastVisionModel en 4-bit ──────────────────────────
+        # ── PASO 2: Cargar FastVisionModel ──────────────────────────
         self.update_state(state="PROGRESS", meta={"step": 2, "msg": f"Cargando FastVisionModel {base_model}"})
-        logger.info(f"--> [Paso 2] Cargando FastVisionModel {base_model} en 16-bit LoRA...")
+        logger.info(f"--> [Paso 2] Cargando FastVisionModel {base_model} en 16-bit LoRA (Gemma 4 MoE)...")
         model, tokenizer = FastVisionModel.from_pretrained(
             model_name=base_model,
-            load_in_4bit=False,            # ⚠️ Unsloth desaconseja QLoRA para Qwen3.5.
-                                           # Con 24GB VRAM: 2B VL en bf16 ocupa ~6-8GB. Margen amplio.
+            load_in_4bit=False,            # QLoRA es inestable para MoE
+            load_in_16bit=True,            # BF16 LoRA recomendado para MoE
             use_gradient_checkpointing="unsloth",
             max_seq_length=2048,           # Sincronizado con SFTConfig
         )
@@ -110,10 +110,11 @@ def start_vl_finetuning_task(
             model,
             r=16,
             target_modules=[
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
+                "q_proj", "k_proj", "v_proj", "o_proj",   # Solo atención: compatible con LoRA dinámico en vLLM
+                # Excluimos "gate_proj", "up_proj", "down_proj" porque vLLM aún no soporta
+                # LoRA dinámico sobre capas de expertos fusionados (fused_moe_lora)
             ],
-            lora_alpha=32,          # BUG 2 fix: ratio α/r = 2:1 (estándar, igual que texto trainer)
+            lora_alpha=16,          # Gemma 4 ratio recomendado 1:1
             lora_dropout=0,
             bias="none",
             random_state=3407,      # BUG 1 fix: reproducibilidad garantizada
@@ -136,7 +137,7 @@ def start_vl_finetuning_task(
             train_dataset=vl_dataset,
             data_collator=UnslothVisionDataCollator(model, tokenizer),
             args=SFTConfig(
-                per_device_train_batch_size=2,  # 2B VL bf16 en 24GB: batch 2 seguro (encoder visual ocupa más)
+                per_device_train_batch_size=2, 
                 gradient_accumulation_steps=8,
                 warmup_ratio=0.1,
                 num_train_epochs=vl_epochs,

@@ -41,8 +41,7 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         from datasets import load_dataset
         # CRÍTICO: Usar SFTConfig en vez de TrainingArguments.
         # SFTConfig hereda de TrainingArguments pero gestiona dataset_text_field
-        # y la tokenización internamente, evitando que el procesador multimodal
-        # de Qwen3.5 interprete texto como imágenes.
+        # y la tokenización internamente.
         from trl import SFTTrainer, SFTConfig
     except ImportError as e:
         logger.error(f"[MLOps] LIBRERÍAS GPU FATAL ERROR: {e}. Se cancela el Job.")
@@ -89,30 +88,26 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         self.update_state(state="PROGRESS", meta={"step": 1, "msg": f"Cargando modelo base {base_model}"})
         logger.info(f"--> [Paso 1.1] Cargando modelo base {base_model} en bf16 LoRA (16-bit)...")
 
-        # Validar que el modelo sea compatible con Unsloth
-        # Qwen3.5-9B requiere ~18GB VRAM en bf16, puede fallar en GPUs pequeñas
-        # Preferimos Qwen3.5-2B o Qwen3.5-4B para entrenamiento Edge
-        if "9B" in base_model:
-            logger.warning(f"⚠️  Modelo {base_model} requiere ~18GB VRAM. Considera usar Qwen3.5-2B o 4B.")
+        # Validate compatibility — Gemma 4 26B MoE requires significant VRAM
+        if "26b" in base_model.lower() or "26B" in base_model:
+            logger.warning(f"⚠️  Modelo {base_model} (MoE 26B) requiere ~42GB VRAM para BF16 LoRA.")
 
         try:
             model, tokenizer = FastLanguageModel.from_pretrained(
                 model_name=base_model,
                 max_seq_length=2048,
-                dtype=torch.bfloat16 if is_bfloat16_supported() else torch.float16,
-                load_in_4bit=False,
-                # Forzar carga en GPU para evitar "meta tensor" error
-                device_map={"": "cuda"} if torch.cuda.is_available() else None,
+                dtype=None,  # Auto-detect: bfloat16 if supported, else float16
+                load_in_4bit=False,      # ⚠️ QLoRA NOT recommended for MoE (Unsloth docs)
+                load_in_16bit=True,      # BF16 LoRA: stable for MoE expert routing
             )
         except Exception as load_err:
             logger.error(f"❌ Error cargando modelo {base_model}: {load_err}")
-            logger.info("🔄 Intentando fallback con load_in_4bit=True...")
-            # Fallback a QLoRA si bf16 falla (problemas de VRAM o compatibilidad)
+            logger.info("🔄 Intentando fallback con load_in_4bit=True (MoE inestable, usar con precaución)...")
             model, tokenizer = FastLanguageModel.from_pretrained(
                 model_name=base_model,
                 max_seq_length=2048,
                 dtype=None,
-                load_in_4bit=True,
+                load_in_4bit=True,  # Fallback — may be unstable with MoE routing
             )
 
         # --- PASO 2: Formateo de Datos ---
@@ -169,7 +164,8 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
         logger.info(f"--> [Paso 2.2] Dataset normalizado: {len(dataset)} filas. Columnas: {dataset.column_names}")
 
         # standardize_sharegpt: convierte from/value → role/content para apply_chat_template
-        tokenizer = get_chat_template(tokenizer, chat_template="chatml")
+        # Gemma 4 chat template: uses system/user/model roles with <|think|> for reasoning
+        tokenizer = get_chat_template(tokenizer, chat_template="gemma-4-thinking")
         dataset = standardize_sharegpt(dataset)
 
         def formatting_prompts_func(examples):
@@ -182,16 +178,13 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
 
         dataset = dataset.map(formatting_prompts_func, batched=True)
         
-        # CRÍTICO: Tokenización manual con argumentos NOMBRADOS (text=...)
-        # El tokenizer de Qwen3.5 es multimodal. Si le pasamos el texto posicionalmente
-        # (ej. tokenizer(examples["text"])), lo interpreta erróneamente como una imagen
-        # y falla con "Incorrect image source". Esto también arregla el error de TRL
-        # donde falla el tokenizado interno al usar dataset_text_field.
+        # Tokenización manual con argumentos NOMBRADOS (text=...)
+        # Prevents the tokenizer from misinterpreting text as multimodal input.
         def tokenize_func(examples):
             return tokenizer(
                 text=examples["text"], 
                 truncation=True, 
-                max_length=2048,  # Sincronizado con max_seq_length
+                max_length=2048,
                 padding=False
             )
             
@@ -205,22 +198,24 @@ def start_finetuning_task(self, tenant_id: str, base_model: str, epochs: int, we
 
         # --- PASO 3: Inyección LoRA ---
         self.update_state(state="PROGRESS", meta={"step": 3, "msg": "Inyectando adaptadores LoRA"})
-        logger.info("--> [Paso 3] Inyectando LoRA (QLoRA-All, r=16, alpha=32)...")
+        logger.info("--> [Paso 3] Inyectando LoRA (BF16-All, r=16, alpha=16) para Gemma 4 MoE...")
         model = FastLanguageModel.get_peft_model(
             model,
             r=16,
-            lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            lora_alpha=16,  # Gemma 4: ratio 1:1 (r=16, alpha=16) per Unsloth recommendations
+            target_modules=[
+                "q_proj", "k_proj", "v_proj", "o_proj",    # Attention layers
+                "gate_proj", "up_proj", "down_proj",        # MoE expert FFN layers
+            ],
             lora_dropout=0,
             bias="none",
-            use_gradient_checkpointing="unsloth", # Usa un 30% menos de VRAM
+            use_gradient_checkpointing="unsloth",  # 70% less VRAM — critical for 26B MoE
             random_state=3407,
             use_rslora=False,
         )
 
         # --- PASO 4: Bucle de Entrenamiento (Data Replay) ---
-        # Siguiendo receta oficial de Unsloth para Qwen3.5:
-        # https://unsloth.ai/docs/models/qwen3.5/fine-tune#quickstart
+        # Gemma 4 MoE training with Unsloth optimized Triton kernels
         self.update_state(state="PROGRESS", meta={"step": 4, "msg": f"Entrenando modelo — {epochs} épocas"})
         logger.info(f"--> [Paso 4] Entrenando modelo (Settings SOTA). Epochs: {epochs}...")
         

@@ -80,8 +80,10 @@ services:
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
       - API_KEY=${MOTHERSHIP_API_KEY:-default-mothership-secret-key}
-      # Necesario para Unsloth/Transformers para que no descarguen al contenedor temporal
+      # Required for Unsloth/Transformers cache
       - HF_HOME=/app/data/huggingface_cache
+      # Required for Gemma 4 MoE optimized Triton kernels
+      - UNSLOTH_MOE_BACKEND=unsloth
     volumes:
       - ./app:/app/app
       - ./data:/app/data
